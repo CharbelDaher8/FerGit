@@ -275,7 +275,7 @@ impl Snapshot {
 
         let head = tips.head.id();
         let mut layout = Layout::new();
-        let mut relations = RelationsBuilder::default();
+        let mut relations = RelationsBuilder::with_aliases(relations::upstream_aliases(&tips.upstreams));
         let mut parent_lanes = Vec::new();
         let mut graph = Vec::with_capacity(slots.len());
         for &slot in &slots {

@@ -21,13 +21,19 @@
 //!    trunk and stash or uncommitted-changes lines, gets a [`Relation::BranchedFrom`], unless it has
 //!    the same name as the node (the same branch drawn twice, as after criss-cross merges).
 //!
+//! Every name, from a ref or a message, first goes through the aliases (see [`upstream_aliases`]):
+//! a remote-tracking branch that a local branch follows is named after the local branch. Otherwise
+//! whichever of the two is ahead would name their shared line first and keep that name, so a branch
+//! that is merely behind its upstream would read as `origin/…`, and a branch that diverged from its
+//! upstream would appear to branch from itself.
+//!
 //! Stash and uncommitted-changes rows produce no relations, and their lines name nothing.
 
 use std::collections::HashMap;
 
 use fergit_graph::{GraphRow, Half};
 
-use crate::repo::MergeNames;
+use crate::repo::{BranchUpstream, MergeNames};
 use crate::types::{RefKind, RefLabel, Relation, RowKind};
 
 /// What the naming needs to know about one row.
@@ -55,6 +61,23 @@ pub(super) fn branch_name(labels: &[RefLabel]) -> Option<&str> {
     branches.first().map(|label| label.name.as_str())
 }
 
+/// The short name of every remote-tracking branch some local branch follows, mapped to that local
+/// branch's name (`origin/main` → `main`). Upstreams that are local branches (`remote = .`) are
+/// left out: they are branches of their own. When several local branches follow the same
+/// remote-tracking branch, the first by full name wins, as `upstreams` comes sorted by branch.
+pub(super) fn upstream_aliases(upstreams: &[BranchUpstream]) -> HashMap<String, String> {
+    let mut aliases = HashMap::new();
+    for upstream in upstreams {
+        let Some(local) = upstream.branch.strip_prefix("refs/heads/") else {
+            continue;
+        };
+        if upstream.full_name.starts_with("refs/remotes/") {
+            aliases.entry(upstream.name.clone()).or_insert_with(|| local.to_owned());
+        }
+    }
+    aliases
+}
+
 type NameId = u32;
 
 #[derive(Debug, Clone, Copy)]
@@ -79,12 +102,19 @@ pub(super) struct RelationsBuilder {
     lanes: Vec<Option<Line>>,
     names: Vec<String>,
     name_ids: HashMap<String, NameId>,
+    /// Names shown under another name; see [`upstream_aliases`].
+    aliases: HashMap<String, String>,
     next_row: u32,
     relations: Relations,
     converging: Vec<(u16, Option<Line>)>,
 }
 
 impl RelationsBuilder {
+    /// A builder that names every line through `aliases` (from [`upstream_aliases`]).
+    pub fn with_aliases(aliases: HashMap<String, String>) -> RelationsBuilder {
+        RelationsBuilder { aliases, ..RelationsBuilder::default() }
+    }
+
     pub fn push(&mut self, row: RowInput<'_>) {
         let row_number = self.next_row;
         self.next_row += 1;
@@ -164,7 +194,9 @@ impl RelationsBuilder {
         self.lanes[lane] = Some(line);
     }
 
+    /// The id of `name` as shown, that is after applying its alias.
     fn intern(&mut self, name: &str) -> NameId {
+        let name = self.aliases.get(name).map_or(name, String::as_str);
         if let Some(&id) = self.name_ids.get(name) {
             return id;
         }
@@ -205,6 +237,7 @@ mod tests {
     use fergit_graph::Layout;
 
     use super::*;
+    use crate::types::Oid;
 
     /// One row: id, parents, kind, best branch ref, merge message names.
     struct Commit {
@@ -241,8 +274,13 @@ mod tests {
 
     /// Lays out `commits` in the given order and returns each row's relations by id.
     fn relations(commits: &[Commit]) -> Vec<(&'static str, Vec<Relation>)> {
+        relations_with(HashMap::new(), commits)
+    }
+
+    /// Like [`relations`], naming lines through `aliases`.
+    fn relations_with(aliases: HashMap<String, String>, commits: &[Commit]) -> Vec<(&'static str, Vec<Relation>)> {
         let mut layout = Layout::new();
-        let mut builder = RelationsBuilder::default();
+        let mut builder = RelationsBuilder::with_aliases(aliases);
         let mut parent_lanes = Vec::new();
         for commit in commits {
             let graph = layout.push_with_parent_lanes(commit.id, commit.parents, &mut parent_lanes);
@@ -273,6 +311,10 @@ mod tests {
 
     fn merges(lane: u16, branch: Option<&str>, into: Option<&str>) -> Relation {
         Relation::Merges { lane, branch: branch.map(str::to_owned), into: into.map(str::to_owned) }
+    }
+
+    fn origin_alias(branch: &str) -> HashMap<String, String> {
+        HashMap::from([(format!("origin/{branch}"), branch.to_owned())])
     }
 
     #[test]
@@ -380,6 +422,78 @@ mod tests {
             commit("p", &[]),
         ]);
         assert_eq!(nonempty(rows), [("merge", vec![merges(1, name("x").as_deref(), Some("dev"))]), ("p", vec![branched(1, Some("x"), Some("dev"))])]);
+    }
+
+    #[test]
+    fn a_branch_behind_its_upstream_keeps_its_local_name() {
+        // `origin/feature` is one commit ahead of `feature`, so its tip names the shared line first.
+        let commits = || {
+            [
+                commit("remote-tip", &["f1"]).on("origin/feature"),
+                commit("merge", &["m1", "f1"]).on("main").message(&["feature"], None),
+                commit("m1", &["base"]),
+                commit("f1", &["base"]).on("feature"),
+                commit("base", &[]),
+            ]
+        };
+        let without = relations(&commits());
+        assert_eq!(without[1], ("merge", vec![merges(0, Some("origin/feature"), Some("main"))]), "the problem");
+
+        let rows = relations_with(origin_alias("feature"), &commits());
+        assert_eq!(rows[1], ("merge", vec![merges(0, Some("feature"), Some("main"))]));
+    }
+
+    #[test]
+    fn a_branch_diverged_from_its_upstream_does_not_branch_from_itself() {
+        let commits = || {
+            [
+                commit("merge", &["m1", "local"]).on("main").message(&["bugfix"], None),
+                commit("remote", &["fork"]).on("origin/bugfix"),
+                commit("m1", &["base"]),
+                commit("local", &["fork"]).on("bugfix"),
+                commit("fork", &["base"]),
+                commit("base", &[]),
+            ]
+        };
+        let without = nonempty(relations(&commits()));
+        assert!(
+            without.iter().any(|(id, rows)| *id == "fork" && rows.iter().any(|r| matches!(r, Relation::BranchedFrom { .. }))),
+            "the problem: {without:?}"
+        );
+
+        let rows = relations_with(origin_alias("bugfix"), &commits());
+        assert_eq!(
+            nonempty(rows),
+            [
+                ("merge", vec![merges(1, Some("bugfix"), Some("main"))]),
+                ("base", vec![branched(1, Some("bugfix"), Some("main"))]),
+            ]
+        );
+    }
+
+    #[test]
+    fn upstream_aliases_map_remote_tracking_upstreams_to_local_names() {
+        let upstream = |branch: &str, full_name: &str| BranchUpstream {
+            branch: format!("refs/heads/{branch}"),
+            name: full_name.trim_start_matches("refs/remotes/").trim_start_matches("refs/heads/").to_owned(),
+            full_name: full_name.to_owned(),
+            id: Some(Oid::ZERO),
+        };
+        let aliases = upstream_aliases(&[
+            upstream("feature", "refs/remotes/origin/feature"),
+            // A second local branch following the same upstream: the first by name keeps it.
+            upstream("feature-copy", "refs/remotes/origin/feature"),
+            // A local branch following a local branch is a branch of its own.
+            upstream("follower", "refs/heads/main"),
+            upstream("main", "refs/remotes/upstream/trunk"),
+        ]);
+        assert_eq!(
+            aliases,
+            HashMap::from([
+                ("origin/feature".to_owned(), "feature".to_owned()),
+                ("upstream/trunk".to_owned(), "main".to_owned()),
+            ])
+        );
     }
 
     #[test]

@@ -205,3 +205,31 @@ fn relations_name_a_merged_and_deleted_branch() {
     assert!(row("main work").relations.is_empty());
     assert!(row("feature work").relations.is_empty());
 }
+
+#[test]
+fn a_merged_branch_behind_its_upstream_keeps_its_local_name() {
+    let fx = Fixture::new();
+    let (origin, work, clone) = cloned(&fx);
+    git(&work, &["checkout", "--quiet", "-b", "feature"]);
+    commit(&work, "f.txt", "1\n", "feature 1", T0 + MINUTE);
+    git(&work, &["push", "--quiet", origin.to_str().unwrap(), "feature"]);
+    git(&clone, &["fetch", "--quiet"]);
+    git(&clone, &["checkout", "--quiet", "-b", "feature", "--track", "origin/feature"]);
+    git(&clone, &["checkout", "--quiet", "main"]);
+    git_at(&clone, &["merge", "--quiet", "--no-ff", "--no-edit", "feature"], T0 + 2 * MINUTE);
+    // The remote branch moves on after the merge, so its tip is the newest commit on the line.
+    commit(&work, "f.txt", "2\n", "feature 2", T0 + 3 * MINUTE);
+    git(&work, &["push", "--quiet", origin.to_str().unwrap(), "feature"]);
+    git(&clone, &["fetch", "--quiet"]);
+
+    let session = Session::open(&clone).unwrap();
+    assert_eq!(upstream_of(&session, "feature"), tracking("origin/feature", 0, 1), "the fixture is behind as intended");
+    let rows = all_rows(&session);
+    let merge = rows.iter().find(|row| row.summary == "Merge branch 'feature'").expect("the merge row");
+
+    assert!(
+        matches!(merge.relations.as_slice(), [Relation::Merges { branch: Some(b), into: Some(i), .. }] if b == "feature" && i == "main"),
+        "{:?}",
+        merge.relations
+    );
+}
