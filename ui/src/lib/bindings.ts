@@ -32,6 +32,34 @@ export const commands = {
 	/**  Files changed relative to the first parent (or the empty tree for a root commit). */
 	files: FileChange[],
 } | null>("commit_details", { id }),
+	/**
+	 *  Files that differ between `from` and `to`, sorted by path; a `from` of `null` compares against
+	 *  nothing. Reads the index and worktree as they are now.
+	 */
+	changes: (from: 
+/**  The files of a commit. */
+{ kind: "commit"; id: Oid } | 
+/**  The staged files: what the next commit would contain. */
+{ kind: "index" } | 
+/**
+ *  The files on disk as git would store them (line endings converted the way git would), plus
+ *  untracked files that aren't ignored.
+ */
+{ kind: "worktree" } | null, to: DiffSide) => __TAURI_INVOKE<FileChange[]>("changes", { from, to }),
+	/**
+	 *  How one file differs between `from` (`null`: nothing) and `to`. `path` names the file on the
+	 *  `to` side; pass `oldPath` when it was renamed or copied from another path.
+	 */
+	fileDiff: (from: 
+/**  The files of a commit. */
+{ kind: "commit"; id: Oid } | 
+/**  The staged files: what the next commit would contain. */
+{ kind: "index" } | 
+/**
+ *  The files on disk as git would store them (line endings converted the way git would), plus
+ *  untracked files that aren't ignored.
+ */
+{ kind: "worktree" } | null, to: DiffSide, path: string, oldPath: string | null) => __TAURI_INVOKE<FileDiff>("file_diff", { from, to, path, oldPath }),
 };
 
 /** Events */
@@ -58,6 +86,29 @@ export type CommitDetails = {
 	/**  Files changed relative to the first parent (or the empty tree for a root commit). */
 	files: FileChange[],
 };
+
+export type DiffLine = {
+	kind: LineKind,
+	/**  The line without its terminator. */
+	text: string,
+	/**
+	 *  True if this is the last line of its version and that version doesn't end with a newline
+	 *  (git's `\ No newline at end of file`).
+	 */
+	noFinalNewline: boolean,
+};
+
+/**  One side of a comparison between two versions of the repository's files. */
+export type DiffSide = 
+/**  The files of a commit. */
+{ kind: "commit"; id: Oid } | 
+/**  The staged files: what the next commit would contain. */
+{ kind: "index" } | 
+/**
+ *  The files on disk as git would store them (line endings converted the way git would), plus
+ *  untracked files that aren't ignored.
+ */
+{ kind: "worktree" };
 
 /**
  *  A line segment inside one row.
@@ -96,6 +147,23 @@ export type FileChange = {
 	deletions: number | null,
 };
 
+/**  How one file differs between two sides. */
+export type FileDiff = 
+/**
+ *  Changed lines in hunks with three lines of context, as `git diff` shows them. No hunks means
+ *  the contents are identical (a mode-only change, for example).
+ */
+{ kind: "text"; hunks: Hunk[] } | 
+/**  A side is binary: a NUL byte within its first 8000 bytes. */
+{ kind: "binary" } | 
+/**  A side is larger than 8 MiB. */
+{ kind: "tooLarge" } | 
+/**
+ *  The path is a submodule on at least one side; `old` and `new` are the commits it points to,
+ *  `None` where that side has no submodule at the path.
+ */
+{ kind: "submodule"; old: Oid | null; new: Oid | null };
+
 /**
  *  Identifies one snapshot of a repository. Increases every time the visible state changes, and
  *  keeps increasing across repositories opened in the same process, so the UI can discard any
@@ -114,6 +182,21 @@ export type GraphRow = {
 };
 
 export type Half = "upper" | "lower";
+
+export type Hunk = {
+	/**
+	 *  First line of the hunk in the old version, 1-based; 0 when the hunk has no old lines (git's
+	 *  `@@ -0,0 +1,3 @@`).
+	 */
+	oldStart: number,
+	oldLines: number,
+	/**  First line of the hunk in the new version, 1-based; 0 when the hunk has no new lines. */
+	newStart: number,
+	newLines: number,
+	lines: DiffLine[],
+};
+
+export type LineKind = "context" | "added" | "removed";
 
 /**  A git object id (SHA-1). Crosses IPC as a 40-character lowercase hex string. */
 export type Oid = string;
@@ -146,6 +229,8 @@ export type RepoInfo = {
 	name: string,
 	generation: Generation,
 	rowCount: number,
+	/**  The commit HEAD points to; `None` in a repository without commits. */
+	head: Oid | null,
 };
 
 export type Row = {

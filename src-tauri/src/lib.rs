@@ -8,7 +8,7 @@ use std::sync::{Arc, PoisonError, RwLock};
 
 use fergit_core::repo::{RepoError, RepoWatcher};
 use fergit_core::session::Session;
-use fergit_core::{CommitDetails, Oid, RepoInfo, RowLocation, RowsPage};
+use fergit_core::{CommitDetails, DiffSide, FileChange, FileDiff, Oid, RepoInfo, RowLocation, RowsPage};
 use serde::Serialize;
 use specta_typescript::Typescript;
 use tauri::{AppHandle, State};
@@ -137,9 +137,33 @@ async fn commit_details(state: State<'_, AppState>, id: Oid) -> Result<Option<Co
     blocking(move || session.commit_details(id)).await
 }
 
+/// Files that differ between `from` and `to`, sorted by path; a `from` of `null` compares against
+/// nothing. Reads the index and worktree as they are now.
+#[tauri::command]
+#[specta::specta]
+async fn changes(state: State<'_, AppState>, from: Option<DiffSide>, to: DiffSide) -> Result<Vec<FileChange>, AppError> {
+    let session = state.session()?;
+    blocking(move || session.changes(from, to)).await
+}
+
+/// How one file differs between `from` (`null`: nothing) and `to`. `path` names the file on the
+/// `to` side; pass `oldPath` when it was renamed or copied from another path.
+#[tauri::command]
+#[specta::specta]
+async fn file_diff(
+    state: State<'_, AppState>,
+    from: Option<DiffSide>,
+    to: DiffSide,
+    path: String,
+    old_path: Option<String>,
+) -> Result<FileDiff, AppError> {
+    let session = state.session()?;
+    blocking(move || session.file_diff(from, to, &path, old_path.as_deref())).await
+}
+
 fn specta_builder() -> Builder<tauri::Wry> {
     Builder::<tauri::Wry>::new()
-        .commands(collect_commands![open_repo, refresh, rows, locate, commit_details])
+        .commands(collect_commands![open_repo, refresh, rows, locate, commit_details, changes, file_diff])
         .events(collect_events![RepoChanged])
         .error_handling(ErrorHandlingMode::Throw)
 }
