@@ -141,14 +141,16 @@ describe("RowStore paging", () => {
     expect(requestedStarts()).toEqual([200, 20_000, 40_000]);
   });
 
-  it("stops after close", async () => {
+  it("resolves whenLoaded once the range is cached", async () => {
     const rows = store(1, 1000);
     rows.setViewport(0, 40);
-    rows.close();
-    await answerAll(1, 1000);
-    expect(rows.get(0)).toBeUndefined();
-    rows.setViewport(500, 540);
-    expect(backend.requests).toHaveLength(0);
+    let loaded = false;
+    void rows.whenLoaded(190, 210).then(() => (loaded = true));
+    await answer(backend.requests.shift()!, 1, 1000); // page 0 only
+    expect(loaded).toBe(false);
+    await answer(backend.requests.shift()!, 1, 1000); // page 1
+    expect(loaded).toBe(true);
+    await expect(rows.whenLoaded(1000, 1200)).resolves.toBeUndefined(); // past the end: nothing to wait for
   });
 });
 
@@ -202,6 +204,47 @@ describe("RowStore generations", () => {
     expect(requestedStarts()).toEqual([400, 600]);
     await answerAll(3, 1001);
     expect(rows.get(400)?.id).toBe("g3-r400");
+  });
+
+  it("tells its owner about a newer generation while the old rows are still readable", async () => {
+    const seen: (string | undefined)[] = [];
+    const rows: RowStore = new RowStore(
+      { root: "/repo", name: "repo", generation: 1, rowCount: 1000 },
+      () => seen.push(rows.get(0)?.id),
+    );
+    rows.setViewport(0, 40);
+    await answerAll(1, 1000);
+    rows.adopt({ root: "/repo", name: "repo", generation: 1, rowCount: 1000 });
+    expect(seen).toEqual([]);
+    rows.adopt({ root: "/repo", name: "repo", generation: 2, rowCount: 1000 });
+    expect(seen).toEqual(["g1-r0"]);
+    expect(rows.get(0)).toBeUndefined();
+  });
+
+  it("wakes waiters when it moves to another snapshot", async () => {
+    const rows = store(1, 1000);
+    rows.setViewport(0, 40);
+    let woken = false;
+    void rows.whenLoaded(0, 40).then(() => (woken = true));
+    rows.adopt({ root: "/repo", name: "repo", generation: 2, rowCount: 1000 });
+    await settle();
+    expect(woken).toBe(true);
+  });
+
+  it("replaces the repository without notifying, and discards the old repository's responses", async () => {
+    let notified = false;
+    const rows = new RowStore({ root: "/a", name: "a", generation: 1, rowCount: 1000 }, () => (notified = true));
+    rows.setViewport(0, 40);
+    rows.replace({ root: "/b", name: "b", generation: 5, rowCount: 300 });
+    expect(notified).toBe(false);
+    expect(rows.total).toBe(300);
+    await answerAll(1, 1000); // answers for repository a arrive late
+    expect(rows.get(0)).toBeUndefined();
+    expect(rows.generation).toBe(5);
+    // Re-requested from the new repository once the old requests left the in-flight set.
+    expect(requestedStarts()).toEqual([0, 200]);
+    await answerAll(5, 300);
+    expect(rows.get(0)?.id).toBe("g5-r0");
   });
 
   it("ignores a refresh result older than what it already has", async () => {

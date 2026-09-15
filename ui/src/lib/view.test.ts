@@ -1,0 +1,276 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { RepoInfo, Row, RowLocation, RowsPage } from "./bindings";
+import { ROW_HEIGHT } from "./graph";
+import { RepoView, captureAnchor, restoreAnchor, rowWindow, OVERSCAN, type Anchor } from "./view.svelte";
+
+/**
+ * A fake backend holding one snapshot (a generation and the ids of its rows, in order). Commands
+ * answer from whatever snapshot is current when they are called, like the real one.
+ */
+const backend = vi.hoisted(() => ({
+  generation: 1,
+  ids: [] as string[],
+  /** Replaces `locate`'s answer, to simulate races. */
+  locate: null as null | ((id: string) => RowLocation),
+  locateCalls: [] as string[],
+}));
+
+vi.mock("./bindings", () => ({
+  commands: {
+    rows: async (start: number, len: number): Promise<RowsPage> => {
+      const total = backend.ids.length;
+      const from = Math.min(start, total);
+      const rows = backend.ids.slice(from, from + len).map(makeRow);
+      return { generation: backend.generation, start: from, total, rows };
+    },
+    locate: async (id: string): Promise<RowLocation> => {
+      backend.locateCalls.push(id);
+      if (backend.locate) return backend.locate(id);
+      const row = backend.ids.indexOf(id);
+      return { generation: backend.generation, row: row < 0 ? null : row };
+    },
+  },
+}));
+
+function makeRow(id: string): Row {
+  return {
+    kind: "commit",
+    id,
+    graph: { column: 0, color: 0, edges: [] },
+    summary: id,
+    authorName: "Ada",
+    authorEmail: "ada@example.com",
+    time: 0,
+    refs: [],
+  };
+}
+
+function ids(count: number, prefix = "c"): string[] {
+  return Array.from({ length: count }, (_, i) => `${prefix}${i}`);
+}
+
+/** Makes `rowIds` the backend's current snapshot and returns what `refresh` would. */
+function snapshot(generation: number, rowIds: string[]): RepoInfo {
+  backend.generation = generation;
+  backend.ids = rowIds;
+  return { root: "/repo", name: "repo", generation, rowCount: rowIds.length };
+}
+
+/** Lets pending commands, their follow-ups and re-anchoring run. */
+async function settle(): Promise<void> {
+  for (let i = 0; i < 10; i++) await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+const HEIGHT = 10 * ROW_HEIGHT;
+
+/** A view of 100 commits scrolled `offset` px down, with its rows loaded. */
+async function openView(offset: number, selected: number | null): Promise<RepoView> {
+  const view = new RepoView(snapshot(1, ids(100)));
+  view.setViewport(offset, HEIGHT);
+  await settle();
+  view.select(selected);
+  return view;
+}
+
+beforeEach(() => {
+  backend.locate = null;
+  backend.locateCalls = [];
+});
+
+describe("anchor math", () => {
+  const anchor = (offset: number, selected: number | null): Anchor =>
+    captureAnchor(offset, selected, (index) => makeRow(`c${index}`));
+
+  it("captures the top row, the offset within it, and the selection", () => {
+    expect(anchor(70, 12)).toEqual({ offset: 70, topIndex: 2, topId: "c2", selected: 12, selectedId: "c12" });
+    const unloaded = captureAnchor(70, 12, () => undefined);
+    expect(unloaded.topId).toBeNull();
+    expect(unloaded.selectedId).toBeNull();
+    expect(captureAnchor(70, null, () => undefined).selectedId).toBeNull();
+  });
+
+  it("keeps the top row's pixel offset", () => {
+    // The viewport's top was 14px into row 2; that row moved to index 5.
+    expect(restoreAnchor(anchor(70, null), 5, undefined).offset).toBe(5 * ROW_HEIGHT + 14);
+  });
+
+  it("stays pinned to the very top", () => {
+    expect(restoreAnchor(anchor(0, null), 3, undefined).offset).toBe(0);
+  });
+
+  it("keeps the offset when the top row is gone or unknown", () => {
+    expect(restoreAnchor(anchor(70, null), null, undefined).offset).toBe(70);
+    expect(restoreAnchor(anchor(70, null), undefined, undefined).offset).toBe(70);
+  });
+
+  it("moves the selection with its row, clears it when the row is gone, keeps it when unknown", () => {
+    expect(restoreAnchor(anchor(70, 12), 2, 15).selected).toBe(15);
+    expect(restoreAnchor(anchor(70, 12), 2, null).selected).toBeNull();
+    expect(restoreAnchor(anchor(70, 12), 2, undefined).selected).toBe(12);
+    expect(restoreAnchor(anchor(70, null), 2, undefined).selected).toBeNull();
+  });
+
+  it("computes the row window with overscan, clamped", () => {
+    expect(rowWindow(70, HEIGHT, 100)).toEqual({ first: 0, end: 13 + OVERSCAN });
+    expect(rowWindow(90 * ROW_HEIGHT, HEIGHT, 100)).toEqual({ first: 90 - OVERSCAN, end: 100 });
+  });
+});
+
+describe("RepoView re-anchoring", () => {
+  it("keeps the top row and the selection on the same commits when commits are added", async () => {
+    const view = await openView(70, 10);
+    view.adopt(snapshot(2, ["new1", "new0", ...ids(100)]));
+
+    // Until the new rows are in place, the old ones stay on screen.
+    expect(view.row(2)?.id).toBe("c2");
+    expect(view.total).toBe(100);
+
+    await settle();
+    expect(view.total).toBe(102);
+    expect(view.generation).toBe(2);
+    expect(view.row(12)?.id).toBe("c10");
+    expect(view.selected).toBe(12);
+    expect(view.scrollRequest).toEqual({ offset: 70 + 2 * ROW_HEIGHT });
+  });
+
+  it("shows new commits when scrolled to the top", async () => {
+    const view = await openView(0, 5);
+    view.adopt(snapshot(2, ["new0", ...ids(100)]));
+    await settle();
+    expect(view.scrollRequest).toEqual({ offset: 0 });
+    expect(view.row(0)?.id).toBe("new0");
+    expect(view.selected).toBe(6);
+  });
+
+  it("clears the selection when its commit is gone", async () => {
+    const view = await openView(70, 10);
+    view.adopt(snapshot(2, ids(100).filter((id) => id !== "c10")));
+    await settle();
+    expect(view.selected).toBeNull();
+    expect(view.scrollRequest).toEqual({ offset: 70 });
+  });
+
+  it("keeps the offset when the top row is gone", async () => {
+    const view = await openView(70, 10);
+    view.adopt(snapshot(2, ["new0", ...ids(100).filter((id) => id !== "c2")]));
+    await settle();
+    expect(view.scrollRequest).toEqual({ offset: 70 });
+    expect(view.selected).toBe(10);
+  });
+
+  it("ignores locations from an older generation, and re-anchors on the next change", async () => {
+    const view = await openView(70, 10);
+    backend.locate = () => ({ generation: 1, row: 0 });
+    view.adopt(snapshot(2, ["new0", ...ids(100)]));
+    await settle();
+    expect(view.selected).toBe(10);
+    expect(view.scrollRequest).toBeNull();
+    expect(view.row(10)?.id).toBe("c10"); // still showing the old rows
+
+    backend.locate = null;
+    view.adopt(snapshot(3, ["new1", "new0", ...ids(100)]));
+    await settle();
+    expect(view.generation).toBe(3);
+    expect(view.selected).toBe(12);
+    expect(view.scrollRequest).toEqual({ offset: 70 + 2 * ROW_HEIGHT });
+  });
+
+  it("ignores locations from a newer generation until that generation arrives", async () => {
+    const view = await openView(70, 10);
+    const info = snapshot(2, ["new0", ...ids(100)]);
+    backend.locate = () => ({ generation: 3, row: 40 });
+    view.adopt(info);
+    await settle();
+    expect(view.selected).toBe(10);
+    expect(view.scrollRequest).toBeNull();
+  });
+
+  it("anchors on what is on screen when the repository changes again while settling", async () => {
+    const view = await openView(70, 10);
+    const second = snapshot(2, ["new0", ...ids(100)]);
+    const third = snapshot(3, ["new2", "new1", "new0", ...ids(100)]);
+    view.adopt(second);
+    view.adopt(third);
+    await settle();
+    expect(view.generation).toBe(3);
+    expect(view.row(13)?.id).toBe("c10");
+    expect(view.selected).toBe(13);
+    expect(view.scrollRequest).toEqual({ offset: 70 + 3 * ROW_HEIGHT });
+  });
+
+  it("re-anchors when a page reveals the change before any event does", async () => {
+    const view = new RepoView(snapshot(1, ids(1000)));
+    view.setViewport(0, HEIGHT);
+    await settle();
+    view.select(10);
+    snapshot(2, ["new0", ...ids(1000)]);
+    view.setViewport(450 * ROW_HEIGHT, HEIGHT); // needs a page that isn't cached
+    await settle();
+    expect(view.generation).toBe(2);
+    expect(view.selected).toBe(11);
+  });
+
+  it("does nothing on a refresh with the same generation", async () => {
+    const view = await openView(70, 10);
+    view.adopt({ root: "/repo", name: "repo", generation: 1, rowCount: 100 });
+    await settle();
+    expect(backend.locateCalls).toEqual([]);
+    expect(view.scrollRequest).toBeNull();
+  });
+
+  it("starts from the top with nothing selected when another repository is opened", async () => {
+    const view = await openView(700, 30);
+    view.replace(snapshot(9, ids(50, "other")));
+    expect(view.selected).toBeNull();
+    expect(view.scrollRequest).toEqual({ offset: 0 });
+    view.setViewport(0, HEIGHT);
+    await settle();
+    expect(view.row(0)?.id).toBe("other0");
+    expect(backend.locateCalls).toEqual([]);
+  });
+});
+
+describe("RepoView navigation", () => {
+  it("goes to a commit: selects its row and scrolls it into view", async () => {
+    const view = await openView(0, 1);
+    await expect(view.goTo("c50")).resolves.toBe(true);
+    expect(view.selected).toBe(50);
+    expect(view.scrollRequest).toEqual({ offset: 51 * ROW_HEIGHT - HEIGHT });
+  });
+
+  it("scrolls up to a commit above the viewport", async () => {
+    const view = await openView(40 * ROW_HEIGHT, 45);
+    await view.goTo("c3");
+    expect(view.scrollRequest).toEqual({ offset: 3 * ROW_HEIGHT });
+  });
+
+  it("doesn't scroll to a commit already in view", async () => {
+    const view = await openView(0, 1);
+    await view.goTo("c4");
+    expect(view.selected).toBe(4);
+    expect(view.scrollRequest).toBeNull();
+  });
+
+  it("reports a commit no row shows, and leaves the selection alone", async () => {
+    const view = await openView(0, 1);
+    await expect(view.find("missing")).resolves.toBeNull();
+    await expect(view.goTo("missing")).resolves.toBe(false);
+    expect(view.selected).toBe(1);
+  });
+
+  it("doesn't trust a location from another generation", async () => {
+    const view = await openView(0, 1);
+    backend.locate = () => ({ generation: 7, row: 20 });
+    await expect(view.find("c20")).resolves.toBeNull();
+    await expect(view.goTo("c20")).resolves.toBe(false);
+    expect(view.selected).toBe(1);
+  });
+
+  it("reveals a selection made before the viewport was measured, once it is", async () => {
+    const view = new RepoView(snapshot(1, ids(100)));
+    view.select(60, true);
+    expect(view.scrollRequest).toBeNull();
+    view.setViewport(0, HEIGHT);
+    expect(view.scrollRequest).toEqual({ offset: 61 * ROW_HEIGHT - HEIGHT });
+  });
+});

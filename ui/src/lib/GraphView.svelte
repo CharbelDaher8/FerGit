@@ -1,7 +1,8 @@
 <!--
   The commit list: a virtualized scroll container with DOM rows for the text columns and one
   canvas, fixed over the viewport, for the graph. Only visible rows (plus overscan) exist in the
-  DOM and on the canvas; the RowStore fetches whatever they need.
+  DOM and on the canvas. The RepoView decides which rows those are, what is selected, and where to
+  scroll when the repository changes; this component maps it onto the scroll container.
 -->
 <script lang="ts">
   import { untrack } from "svelte";
@@ -18,20 +19,16 @@
     scrollMap,
     type GraphScene,
   } from "./graph";
-  import type { RowStore } from "./rows.svelte";
+  import { rowWindow, type RepoView } from "./view.svelte";
 
   interface Props {
-    rows: RowStore;
-    /** Index of the selected row; changes from outside scroll it into view. */
-    selected: number | null;
+    view: RepoView;
     /** The user clicked a row or pressed Enter on the selection. */
     onactivate: () => void;
   }
 
-  let { rows, selected = $bindable(), onactivate }: Props = $props();
+  let { view, onactivate }: Props = $props();
 
-  /** Rows rendered beyond each edge of the viewport, so fast scrolling doesn't show blanks. */
-  const OVERSCAN = 6;
   /** Ref badges shown per row before collapsing the rest into "+N". */
   const MAX_BADGES = 4;
   /** Share of the view's width the graph column may take. */
@@ -47,18 +44,17 @@
   let scrollbarWidth = $state(0);
   let dark = $state(false);
 
-  const total = $derived(rows.total);
+  const total = $derived(view.total);
   const map = $derived(scrollMap(total, viewHeight));
   // Rows are laid out at `index * ROW_HEIGHT + shift`. `shift` is 0 unless the history is too tall
   // for the browser and the scroll range is compressed; then it moves the rows to wherever the
   // compressed scrollbar says the viewport is. `viewOffset` is the content offset of the viewport.
   const shift = $derived(Math.round(scrollTop - map.toContent(scrollTop)));
   const viewOffset = $derived(scrollTop - shift);
-  const first = $derived(Math.max(0, Math.floor(viewOffset / ROW_HEIGHT) - OVERSCAN));
-  const end = $derived(
-    Math.min(total, Math.ceil((viewOffset + viewHeight) / ROW_HEIGHT) + OVERSCAN),
-  );
-  const indices = $derived(Array.from({ length: Math.max(0, end - first) }, (_, k) => first + k));
+  const span = $derived(rowWindow(viewOffset, viewHeight, total));
+  const first = $derived(span.first);
+  const end = $derived(span.end);
+  const indices = $derived(Array.from({ length: end - first }, (_, k) => first + k));
   const palette = $derived(dark ? DARK_PALETTE : LIGHT_PALETTE);
 
   // The graph column fits the widest visible row. Within one generation it only grows, so
@@ -66,10 +62,10 @@
   // arrive.
   const laneMemo = { generation: -1, lanes: 1 };
   const lanes = $derived.by(() => {
-    const generation = rows.generation;
+    const generation = view.generation;
     let widest = 0;
     for (let i = first; i < end; i++) {
-      const row = rows.get(i);
+      const row = view.row(i);
       if (row) widest = Math.max(widest, lanesUsed(row));
     }
     if (widest === 0) return laneMemo.lanes;
@@ -85,7 +81,18 @@
   );
 
   $effect(() => {
-    rows.setViewport(first, end);
+    view.setViewport(viewOffset, viewHeight);
+  });
+
+  // Scroll where the view asks (selection reveal, re-anchoring). The state is updated in the same
+  // flush so rows are never painted at the old position with new content.
+  $effect(() => {
+    const request = view.scrollRequest;
+    if (!request) return;
+    untrack(() => {
+      scroller.scrollTop = map.toScroll(request.offset);
+      scrollTop = scroller.scrollTop;
+    });
   });
 
   // Canvas drawing: this effect collects the scene (subscribing to everything it depends on) and
@@ -103,7 +110,7 @@
 
   $effect(() => {
     sceneRows.length = 0;
-    for (let i = first; i < end; i++) sceneRows.push(rows.get(i));
+    for (let i = first; i < end; i++) sceneRows.push(view.row(i));
     scene.first = first;
     scene.offset = viewOffset;
     scene.width = graphPx;
@@ -151,25 +158,9 @@
     };
   });
 
-  // Keep the selection in view whenever it changes (keyboard, or a selection made elsewhere).
-  const measured = $derived(viewHeight > 0);
-  $effect(() => {
-    if (selected === null || !measured) return;
-    const index = selected;
-    untrack(() => reveal(index));
-  });
-
-  function reveal(index: number): void {
-    const top = index * ROW_HEIGHT;
-    if (top < viewOffset) {
-      scroller.scrollTop = map.toScroll(top);
-    } else if (top + ROW_HEIGHT > viewOffset + viewHeight) {
-      scroller.scrollTop = map.toScroll(top + ROW_HEIGHT - viewHeight);
-    }
-  }
-
   function onkeydown(event: KeyboardEvent): void {
     if (total === 0) return;
+    const selected = view.selected;
     const pageRows = Math.max(1, Math.floor(viewHeight / ROW_HEIGHT) - 1);
     const topRow = Math.min(total - 1, Math.ceil(viewOffset / ROW_HEIGHT));
     let next: number;
@@ -199,14 +190,14 @@
         return;
     }
     event.preventDefault();
-    selected = Math.max(0, Math.min(total - 1, next));
+    view.select(next, true);
   }
 
   function onclick(event: MouseEvent): void {
     const y = event.clientY - scroller.getBoundingClientRect().top + viewOffset;
     const index = Math.floor(y / ROW_HEIGHT);
     if (index < 0 || index >= total) return;
-    selected = index;
+    view.select(index);
     onactivate();
   }
 </script>
@@ -229,8 +220,8 @@
       role="listbox"
       tabindex="0"
       aria-label="Commits"
-      aria-activedescendant={selected !== null && selected >= first && selected < end
-        ? `row-${selected}`
+      aria-activedescendant={view.selected !== null && view.selected >= first && view.selected < end
+        ? `row-${view.selected}`
         : undefined}
       onscroll={() => (scrollTop = scroller.scrollTop)}
       {onkeydown}
@@ -238,14 +229,14 @@
     >
       <div class="spacer" style:height="{map.height}px">
         {#each indices as i (i)}
-          {@const row = rows.get(i)}
+          {@const row = view.row(i)}
           <div
             id="row-{i}"
             class="columns row"
-            class:selected={i === selected}
+            class:selected={i === view.selected}
             class:working-tree={row?.kind === "workingTree"}
             role="option"
-            aria-selected={i === selected}
+            aria-selected={i === view.selected}
             style:transform="translateY({i * ROW_HEIGHT + shift}px)"
             style:--lane={row ? paletteColor(palette, row.graph.color) : undefined}
           >

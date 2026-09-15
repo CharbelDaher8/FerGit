@@ -1,16 +1,26 @@
 <!-- Details of the selected row: message, signatures, parents and changed files. -->
 <script lang="ts">
   import { untrack } from "svelte";
-  import { commands, type ChangeStatus, type CommitDetails, type Row, type Signature } from "./bindings";
+  import {
+    commands,
+    type ChangeStatus,
+    type CommitDetails,
+    type Oid,
+    type Row,
+    type Signature,
+  } from "./bindings";
   import { formatSignatureTime, shortId } from "./format";
+  import type { RepoView } from "./view.svelte";
 
   interface Props {
+    /** Where the selected row lives; parent links navigate within it. */
+    view: RepoView;
     /** The selected row; `undefined` while its page is loading. */
     row: Row | undefined;
     onclose: () => void;
   }
 
-  let { row, onclose }: Props = $props();
+  let { view, row, onclose }: Props = $props();
 
   /** Files rendered before asking; a huge commit would otherwise freeze the panel. */
   const FILE_LIMIT = 500;
@@ -51,6 +61,21 @@
       });
     }, LOAD_DELAY_MS);
     return () => clearTimeout(timer);
+  });
+
+  /** Row of each parent in the snapshot on screen: absent while looking up, `null` if not shown. */
+  let parentRows = $state.raw(new Map<Oid, number | null>());
+
+  $effect(() => {
+    const parents = details?.parents ?? [];
+    void view.generation; // look the parents up again whenever the snapshot changes
+    let current = true;
+    void Promise.all(parents.map((parent) => view.find(parent))).then((rows) => {
+      if (current) parentRows = new Map(parents.map((parent, k) => [parent, rows[k]]));
+    });
+    return () => {
+      current = false;
+    };
   });
 </script>
 
@@ -104,7 +129,18 @@
         <dt>Parents</dt>
         <dd class="mono">
           {#each details.parents as parent}
-            <span class="parent" title={parent}>{shortId(parent)}</span>
+            {@const target = parentRows.get(parent)}
+            {#if target === undefined || target === null}
+              <span
+                class="parent"
+                class:unavailable={target === null}
+                title={target === null ? "Not in this view" : parent}>{shortId(parent)}</span
+              >
+            {:else}
+              <button class="parent link" title="Go to {parent}" onclick={() => view.goTo(parent)}
+                >{shortId(parent)}</button
+              >
+            {/if}
           {:else}
             <span class="none">none</span>
           {/each}
@@ -238,6 +274,28 @@
 
   .parent + .parent {
     margin-left: 8px;
+  }
+
+  .parent.unavailable {
+    color: var(--fg-muted);
+    cursor: help;
+  }
+
+  .link {
+    padding: 0;
+    border: 0;
+    border-radius: 2px;
+    background: none;
+    color: var(--focus);
+    font: inherit;
+    text-decoration: underline;
+    text-decoration-color: color-mix(in srgb, currentColor 40%, transparent);
+    text-underline-offset: 2px;
+    cursor: pointer;
+  }
+
+  .link:hover {
+    text-decoration-color: currentColor;
   }
 
   .id {

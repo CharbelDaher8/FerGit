@@ -4,15 +4,15 @@
   import GraphView from "./lib/GraphView.svelte";
   import { session } from "./lib/session.svelte";
 
-  /** Index of the selected row in the open repository. */
-  let selected = $state<number | null>(null);
   let detailsOpen = $state(true);
 
-  const selectedRow = $derived(selected === null ? undefined : session.rows?.get(selected));
+  const selectedRow = $derived.by(() => {
+    const view = session.view;
+    return view && view.selected !== null ? view.row(view.selected) : undefined;
+  });
 
   async function openRepository(path: string): Promise<void> {
     await session.open(path);
-    selected = null;
     detailsOpen = true;
   }
 
@@ -21,11 +21,16 @@
     if (typeof path === "string") await openRepository(path);
   }
 
+  // Follow changes the backend detects on disk for as long as the app runs.
+  $effect(() => session.followChanges());
+
   // Dev-only startup hooks, for testing without the folder picker.
   if (import.meta.env.DEV && import.meta.env.VITE_FERGIT_OPEN) {
     const select = Number(import.meta.env.VITE_FERGIT_SELECT ?? "");
     void openRepository(import.meta.env.VITE_FERGIT_OPEN).then(() => {
-      if (import.meta.env.VITE_FERGIT_SELECT && Number.isInteger(select)) selected = select;
+      if (import.meta.env.VITE_FERGIT_SELECT && Number.isInteger(select)) {
+        session.view?.select(select, true);
+      }
     });
   }
 </script>
@@ -34,15 +39,15 @@
 
 <div class="app">
   <header class="topbar">
-    <button class="button" class:primary={!session.rows} onclick={chooseRepository}>
+    <button class="button" class:primary={!session.view} onclick={chooseRepository}>
       Open repository…
     </button>
-    {#if session.info && session.rows}
+    {#if session.info && session.view}
       <div class="repo" title={session.info.root}>
         <span class="repo-name">{session.info.name}</span>
         <span class="repo-root">{session.info.root}</span>
       </div>
-      <span class="row-count">{session.rows.total.toLocaleString()} rows</span>
+      <span class="row-count">{session.view.total.toLocaleString()} rows</span>
       <button
         class="button"
         onclick={() => session.refresh()}
@@ -67,12 +72,10 @@
   {/if}
 
   <main class="main">
-    {#if session.rows}
-      {#key session.rows}
-        <GraphView rows={session.rows} bind:selected onactivate={() => (detailsOpen = true)} />
-      {/key}
-      {#if detailsOpen && selected !== null}
-        <DetailsPanel row={selectedRow} onclose={() => (detailsOpen = false)} />
+    {#if session.view}
+      <GraphView view={session.view} onactivate={() => (detailsOpen = true)} />
+      {#if detailsOpen && session.view.selected !== null}
+        <DetailsPanel view={session.view} row={selectedRow} onclose={() => (detailsOpen = false)} />
       {/if}
     {:else}
       <div class="empty">
