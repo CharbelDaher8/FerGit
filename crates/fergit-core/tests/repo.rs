@@ -7,7 +7,7 @@ use std::path::Path;
 
 use common::{AUTHOR_EMAIL, AUTHOR_NAME, Fixture, T0, commit, git, git_at, git_dated, rev_parse, write};
 use fergit_core::repo::{Head, History, Repo, RepoError};
-use fergit_core::{ChangeStatus, FileChange, Oid, RefKind, RefLabel};
+use fergit_core::{ChangeStatus, DiffSide, FileChange, FileDiff, Oid, RefKind, RefLabel};
 
 const MINUTE: i64 = 60;
 
@@ -535,6 +535,20 @@ fn reads_do_not_run_programs_named_by_the_repository() {
     let history = opened.read_history().unwrap();
     opened.commit_details(root).unwrap().expect("a commit");
     opened.commit_details(head).unwrap().expect("a commit");
+
+    // Diffs involving the index and the worktree hash and read worktree files through the filter
+    // pipeline: the stale a.txt above, and an untracked file the attributes also cover.
+    let (index, worktree, head_side) = (DiffSide::Index, DiffSide::Worktree, DiffSide::Commit { id: head });
+    assert_eq!(opened.changes(Some(index), worktree).unwrap(), [], "a.txt's content matches the index");
+    assert_eq!(opened.changes(Some(head_side), worktree).unwrap(), []);
+    assert_eq!(opened.changes(Some(DiffSide::Commit { id: root }), index).unwrap(), []);
+    assert_eq!(opened.file_diff(Some(index), worktree, "a.txt", None).unwrap(), FileDiff::Text { hunks: vec![] });
+    write(&repo, "untracked.txt", "new\n");
+    let untracked = opened.changes(Some(head_side), worktree).unwrap();
+    assert_eq!(untracked.len(), 1);
+    assert_eq!(untracked[0].additions, Some(1));
+    opened.file_diff(Some(head_side), worktree, "untracked.txt", None).unwrap();
+    opened.file_diff(Some(index), worktree, ".gitattributes", None).unwrap();
 
     for name in ["clean-filter-ran", "smudge-filter-ran", "textconv-ran", "external-diff-ran", "fsmonitor-ran"] {
         assert!(!marker(name).exists(), "{name}: a configured program was run");
