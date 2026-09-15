@@ -12,7 +12,9 @@ use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use fergit_graph::{GraphRow, Layout};
 
 use crate::repo::{History, Repo, RepoError};
-use crate::types::{CommitDetails, Generation, Oid, RefKind, RefLabel, RepoInfo, Row, RowKind, RowsPage};
+use crate::types::{
+    CommitDetails, Generation, Oid, RefKind, RefLabel, RepoInfo, Row, RowKind, RowLocation, RowsPage,
+};
 
 /// The generation of the next snapshot any session in this process builds. Sharing it across
 /// sessions means a generation from a previously open repository (in a late response or event) is
@@ -115,6 +117,18 @@ impl Session {
             .collect();
 
         Ok(RowsPage { generation: snapshot.generation, start, total, rows })
+    }
+
+    /// Where the row showing `id` is in the current snapshot: the row of a commit or a stash, or,
+    /// for [`Oid::ZERO`], the uncommitted-changes row. Scans the rows, which takes milliseconds even
+    /// for a million-commit history.
+    pub fn locate(&self, id: Oid) -> RowLocation {
+        let snapshot = self.snapshot();
+        let row = snapshot.slots.iter().position(|&slot| snapshot.id(slot) == id);
+        RowLocation {
+            generation: snapshot.generation,
+            row: row.map(|i| u32::try_from(i).expect("fewer than 4 billion rows")),
+        }
     }
 
     /// Details of the commit `id`, or `None` if it isn't a commit (including [`Oid::ZERO`]).

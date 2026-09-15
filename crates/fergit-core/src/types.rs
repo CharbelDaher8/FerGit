@@ -118,6 +118,16 @@ pub struct RowsPage {
     pub rows: Vec<Row>,
 }
 
+/// Where a row is in one snapshot. A row index means nothing without its generation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+#[serde(rename_all = "camelCase")]
+pub struct RowLocation {
+    pub generation: Generation,
+    /// Index of the row; `None` if no row of this snapshot shows the requested id.
+    pub row: Option<u32>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(rename_all = "camelCase")]
