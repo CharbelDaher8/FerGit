@@ -1,0 +1,24 @@
+[package]
+name = "fergit"
+description = "FerGit desktop app: Tauri shell over fergit-core."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "fergit_lib"
+crate-type = ["rlib"]
+
+[build-dependencies]
+tauri-build = { workspace = true, features = [] }
+
+[dependencies]
+fergit-core = { workspace = true, features = ["specta"] }
+tauri = { workspace = true, features = [] }
+tauri-plugin-dialog.workspace = true
+tauri-specta.workspace = true
+specta = { workspace = true, features = ["derive"] }
+specta-typescript.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
