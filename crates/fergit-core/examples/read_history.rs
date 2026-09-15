@@ -1,13 +1,15 @@
-//! Times `Repo::read_history` on a repository.
+//! Times `Repo::read_history` and `Repo::read_tips` on a repository.
 //!
 //! ```text
 //! cargo run --release -p fergit-core --example read_history -- <repository path> [runs]
 //! ```
 //!
-//! The first run includes cold caches (packs, commit-graph, index); later runs show steady state.
+//! `read_history` is what opening a repository (or a refresh after a change) costs; `read_tips` is
+//! what a refresh costs when nothing changed. The first run includes cold caches (packs,
+//! commit-graph, index); later runs show steady state.
 
 use std::path::PathBuf;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use fergit_core::repo::Repo;
 
@@ -21,20 +23,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let start = Instant::now();
     let repo = Repo::open(&path)?;
-    println!("open: {:.1} ms ({})", start.elapsed().as_secs_f64() * 1e3, repo.root().display());
+    println!("open: {:.1} ms ({})", millis(start.elapsed()), repo.root().display());
 
     for run in 1..=runs {
         let start = Instant::now();
         let history = repo.read_history()?;
-        let elapsed = start.elapsed();
+        let history_elapsed = start.elapsed();
+
+        let start = Instant::now();
+        let tips = repo.read_tips()?;
+        let tips_elapsed = start.elapsed();
+
         println!(
-            "run {run}: read_history {:.1} ms, {} commits, {} refs, {} stashes, worktree dirty: {}",
-            elapsed.as_secs_f64() * 1e3,
+            "run {run}: read_history {:.1} ms, read_tips {:.1} ms, {} commits, {} refs, {} stashes, worktree dirty: {}",
+            millis(history_elapsed),
+            millis(tips_elapsed),
             history.commits.len(),
-            history.tips.refs.len(),
-            history.tips.stashes.len(),
-            history.tips.worktree_dirty,
+            tips.refs.len(),
+            tips.stashes.len(),
+            tips.worktree_dirty,
         );
     }
     Ok(())
+}
+
+fn millis(duration: Duration) -> f64 {
+    duration.as_secs_f64() * 1e3
 }
