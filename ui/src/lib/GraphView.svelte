@@ -7,18 +7,22 @@
 <script lang="ts">
   import { untrack } from "svelte";
   import type { Row } from "./bindings";
-  import { formatLocalTime, shortId } from "./format";
+  import { formatLocalTime, shortId, upstreamSuffix, upstreamTitle } from "./format";
   import {
     DARK_PALETTE,
+    LABEL_FONT,
     LIGHT_PALETTE,
     ROW_HEIGHT,
     drawGraph,
     graphWidth,
-    lanesUsed,
+    nextColumnWidth,
     paletteColor,
+    rowGraphWidth,
     scrollMap,
+    type ColumnWidth,
     type GraphScene,
   } from "./graph";
+  import { settings } from "./settings.svelte";
   import { rowWindow, type RepoView } from "./view.svelte";
 
   interface Props {
@@ -58,25 +62,38 @@
   const palette = $derived(dark ? DARK_PALETTE : LIGHT_PALETTE);
   const comparison = $derived(view.comparison);
 
-  // The graph column fits the widest visible row. Within one generation it only grows, so
-  // scrolling never makes the text columns jump left; a new generation starts over once its rows
-  // arrive.
-  const laneMemo = { generation: -1, lanes: 1 };
-  const lanes = $derived.by(() => {
-    const generation = view.generation;
+  // Label widths, measured once per distinct text in the label font.
+  const labelWidths = new Map<string, number>();
+  let measureContext: CanvasRenderingContext2D | null = null;
+  function measureLabel(text: string): number {
+    let width = labelWidths.get(text);
+    if (width === undefined) {
+      measureContext ??= document.createElement("canvas").getContext("2d");
+      if (!measureContext) return text.length * 6;
+      measureContext.font = LABEL_FONT;
+      width = measureContext.measureText(text).width;
+      if (labelWidths.size > 2000) labelWidths.clear();
+      labelWidths.set(text, width);
+    }
+    return width;
+  }
+
+  // The graph column fits the widest visible row, labels included when shown. Within one
+  // generation and label setting it only grows, so scrolling never makes the text columns jump.
+  const column: { width: ColumnWidth } = { width: { key: "", width: graphWidth(1) } };
+  const columnWidth = $derived.by(() => {
+    const labels = settings.showRelations;
     let widest = 0;
     for (let i = first; i < end; i++) {
       const row = view.row(i);
-      if (row) widest = Math.max(widest, lanesUsed(row));
+      if (row) widest = Math.max(widest, rowGraphWidth(row, labels, measureLabel));
     }
-    if (widest === 0) return laneMemo.lanes;
-    laneMemo.lanes = generation === laneMemo.generation ? Math.max(laneMemo.lanes, widest) : widest;
-    laneMemo.generation = generation;
-    return laneMemo.lanes;
+    column.width = nextColumnWidth(column.width, `${view.generation}:${labels}`, widest);
+    return column.width.width;
   });
   const graphPx = $derived(
     Math.min(
-      graphWidth(Math.max(lanes, MIN_GRAPH_LANES)),
+      Math.max(columnWidth, graphWidth(MIN_GRAPH_LANES)),
       Math.max(graphWidth(MIN_GRAPH_LANES), Math.floor(viewWidth * MAX_GRAPH_SHARE)),
     ),
   );
@@ -106,6 +123,7 @@
     width: 0,
     height: 0,
     palette: LIGHT_PALETTE,
+    labels: true,
   };
   let frame = 0;
 
@@ -117,6 +135,7 @@
     scene.width = graphPx;
     scene.height = viewHeight;
     scene.palette = palette;
+    scene.labels = settings.showRelations;
     schedulePaint();
   });
 
@@ -254,9 +273,17 @@
                   >
                 {/if}
                 {#each row.refs.slice(0, MAX_BADGES) as ref}
-                  <span class="ref ref-{ref.kind}" class:current={ref.isHead} title={ref.fullName}
-                    >{ref.name}</span
+                  {@const status = upstreamSuffix(ref.upstream)}
+                  <span
+                    class="ref ref-{ref.kind}"
+                    class:current={ref.isHead}
+                    title={ref.upstream ? `${ref.fullName}\n${upstreamTitle(ref.upstream)}` : ref.fullName}
                   >
+                    <span class="ref-name">{ref.name}</span>
+                    {#if status}
+                      <span class="upstream" class:gone={ref.upstream?.state.kind === "gone"}>{status}</span>
+                    {/if}
+                  </span>
                 {/each}
                 {#if row.refs.length > MAX_BADGES}
                   <span class="ref ref-more" title="{row.refs.length - MAX_BADGES} more refs"
@@ -460,6 +487,29 @@
     font-size: 11px;
     line-height: 16px;
     text-overflow: ellipsis;
+  }
+
+  .ref {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .ref-name {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .upstream {
+    flex: none;
+    font-variant-numeric: tabular-nums;
+    opacity: 0.85;
+  }
+
+  .upstream.gone {
+    font-style: italic;
+    opacity: 0.6;
   }
 
   .ref-localBranch.current {

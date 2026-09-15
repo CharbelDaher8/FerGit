@@ -7,6 +7,7 @@
   import GraphView from "./lib/GraphView.svelte";
   import { Inspector, subjectOf, type FileList } from "./lib/inspector.svelte";
   import { session } from "./lib/session.svelte";
+  import { settings } from "./lib/settings.svelte";
 
   let detailsOpen = $state(true);
   const inspector = new Inspector();
@@ -86,6 +87,10 @@
         <span class="repo-root">{session.info.root}</span>
       </div>
       <span class="row-count">{session.view.total.toLocaleString()} rows</span>
+      <label class="toggle" title="Label where branches split and join on the graph (names are inferred)">
+        <input type="checkbox" bind:checked={settings.showRelations} />
+        Relationships
+      </label>
       <button
         class="button"
         onclick={() => session.refresh()}
@@ -183,6 +188,22 @@
   .repo-root {
     color: var(--fg-muted);
     font-size: 12px;
+  }
+
+  .toggle {
+    display: flex;
+    flex: none;
+    align-items: center;
+    gap: 5px;
+    color: var(--fg-muted);
+    font-size: 12px;
+    white-space: nowrap;
+    user-select: none;
+  }
+
+  .toggle input {
+    margin: 0;
+    accent-color: var(--primary-bg);
   }
 
   .row-count {

@@ -1,17 +1,26 @@
 import { describe, expect, it } from "vitest";
-import type { Edge, Row, RowKind } from "./bindings";
+import type { Edge, Relation, Row, RowKind } from "./bindings";
 import {
   DARK_PALETTE,
   GRAPH_PADDING,
+  LABEL_FONT,
+  LABEL_GAP,
   LANE_WIDTH,
   LIGHT_PALETTE,
+  MAX_LABEL_WIDTH,
   MAX_SCROLL_HEIGHT,
   ROW_HEIGHT,
   drawGraph,
+  fitText,
   graphWidth,
+  labelX,
+  labelY,
   laneX,
   lanesUsed,
+  nextColumnWidth,
   paletteColor,
+  relationLabels,
+  rowGraphWidth,
   scrollMap,
   type GraphContext,
 } from "./graph";
@@ -23,8 +32,12 @@ function recordingContext(): { ctx: GraphContext; calls: Call[] } {
   const calls: Call[] = [];
   const state: Record<string | symbol, unknown> = {};
   const ctx = new Proxy(state, {
-    get: (target, key) =>
-      key in target ? target[key] : (...args: unknown[]) => calls.push([String(key), ...args]),
+    get: (target, key) => {
+      if (key in target) return target[key];
+      // Every character is 6px wide, so text widths are predictable.
+      if (key === "measureText") return (text: string) => ({ width: text.length * CHAR_WIDTH });
+      return (...args: unknown[]) => calls.push([String(key), ...args]);
+    },
     set: (target, key, value) => {
       calls.push([`${String(key)}=`, value]);
       target[key] = value;
@@ -34,7 +47,10 @@ function recordingContext(): { ctx: GraphContext; calls: Call[] } {
   return { ctx, calls };
 }
 
-function row(kind: RowKind, column: number, color: number, edges: Edge[] = []): Row {
+const CHAR_WIDTH = 6;
+const measure = (text: string) => text.length * CHAR_WIDTH;
+
+function row(kind: RowKind, column: number, color: number, edges: Edge[] = [], relations: Relation[] = []): Row {
   return {
     kind,
     id: "0".repeat(40),
@@ -44,14 +60,30 @@ function row(kind: RowKind, column: number, color: number, edges: Edge[] = []): 
     authorEmail: "",
     time: 0,
     refs: [],
+    relations,
   };
 }
 
-function draw(rows: (Row | undefined)[], first = 0, offset = 0): Call[] {
+function draw(rows: (Row | undefined)[], first = 0, offset = 0, options = { labels: false, width: 100 }): Call[] {
   const { ctx, calls } = recordingContext();
-  drawGraph(ctx, { first, rows, offset, width: 100, height: 400, palette: LIGHT_PALETTE });
+  drawGraph(ctx, { first, rows, offset, width: options.width, height: 400, palette: LIGHT_PALETTE, labels: options.labels });
   return calls;
 }
+
+const branchedFrom = (lane: number, branch: string | null, from: string | null): Relation => ({
+  kind: "branchedFrom",
+  lane,
+  branch,
+  from,
+});
+const merges = (lane: number, branch: string | null, into: string | null): Relation => ({
+  kind: "merges",
+  lane,
+  branch,
+  into,
+});
+const up = (from: number, to: number, color: number): Edge => ({ half: "upper", from, to, color });
+const down = (from: number, to: number, color: number): Edge => ({ half: "lower", from, to, color });
 
 const named = (calls: Call[], name: string) => calls.filter((call) => call[0] === name);
 
@@ -75,6 +107,130 @@ describe("geometry", () => {
     expect(paletteColor(LIGHT_PALETTE, 0)).toBe(LIGHT_PALETTE[0]);
     expect(paletteColor(DARK_PALETTE, DARK_PALETTE.length + 1)).toBe(DARK_PALETTE[1]);
     expect(LIGHT_PALETTE).toHaveLength(DARK_PALETTE.length);
+  });
+});
+
+describe("relation labels: wording", () => {
+  it("has no labels without relations", () => {
+    expect(relationLabels([])).toEqual({ upper: null, lower: null });
+  });
+
+  it("names where one branch starts", () => {
+    expect(relationLabels([branchedFrom(1, "topic", "main")])).toEqual({ upper: "branched from main", lower: null });
+    expect(relationLabels([branchedFrom(1, "topic", null)]).upper).toBe("branch point");
+  });
+
+  it("lists several branches starting at one commit", () => {
+    const labels = relationLabels([branchedFrom(1, "fix/a", "main"), branchedFrom(2, null, "main"), branchedFrom(3, "fix/c", null)]);
+    expect(labels.upper).toBe("forks: fix/a, unnamed, fix/c");
+  });
+
+  it("describes one merge by what is known", () => {
+    expect(relationLabels([merges(1, "feature", "main")])).toEqual({ upper: null, lower: "feature merged into main" });
+    expect(relationLabels([merges(1, "feature", null)]).lower).toBe("merges feature");
+    expect(relationLabels([merges(1, null, "main")]).lower).toBe("merge into main");
+    expect(relationLabels([merges(1, null, null)]).lower).toBe("merge");
+  });
+
+  it("calls a merge of two or more branches an octopus merge", () => {
+    expect(relationLabels([merges(1, "a", "main"), merges(2, null, "main"), merges(3, "c", "main")]).lower).toBe(
+      "octopus merge of a, unnamed, c",
+    );
+  });
+
+  it("labels both halves of a row that starts a branch and merges one", () => {
+    expect(relationLabels([branchedFrom(1, "x", "main"), merges(2, "y", "main")])).toEqual({
+      upper: "branched from main",
+      lower: "y merged into main",
+    });
+  });
+});
+
+describe("relation labels: placement", () => {
+  it("starts just right of the rightmost lane the row draws", () => {
+    const wide = row("commit", 0, 0, [up(0, 0, 0), up(2, 0, 1), down(0, 0, 0)], [branchedFrom(2, "b", "main")]);
+    expect(labelX(wide)).toBe(GRAPH_PADDING + 3 * LANE_WIDTH + LABEL_GAP);
+    expect(labelX(wide)).toBeGreaterThan(laneX(2) + LANE_WIDTH / 2);
+  });
+
+  it("centers branch labels in the upper half and merge labels in the lower half", () => {
+    expect(labelY("upper")).toBe(ROW_HEIGHT / 4);
+    expect(labelY("lower")).toBe((ROW_HEIGHT * 3) / 4);
+    expect(labelY("upper") + ROW_HEIGHT / 4).toBeLessThanOrEqual(labelY("lower") - ROW_HEIGHT / 4 + 0.001);
+  });
+
+  it("cuts text that doesn't fit with an ellipsis", () => {
+    expect(fitText("merge", 100, measure)).toBe("merge");
+    const cut = fitText("feature/login merged into main", 60, measure);
+    expect(cut.endsWith("…")).toBe(true);
+    expect(measure(cut)).toBeLessThanOrEqual(60);
+    expect(cut).toBe("feature/l…");
+    expect(fitText("merge", 3, measure)).toBe("");
+  });
+
+  it("widens the column for labels, capped, and not when labels are off", () => {
+    const plain = row("commit", 0, 0, [up(0, 0, 0), down(0, 0, 0)]);
+    expect(rowGraphWidth(plain, true, measure)).toBe(graphWidth(1));
+
+    const merge = row("commit", 0, 0, [up(0, 0, 0), down(0, 0, 0), down(0, 1, 1)], [merges(1, "feature", "main")]);
+    const text = measure("feature merged into main");
+    expect(rowGraphWidth(merge, true, measure)).toBe(labelX(merge) + text + GRAPH_PADDING);
+    expect(rowGraphWidth(merge, false, measure)).toBe(graphWidth(2));
+
+    const long = row("commit", 0, 0, [down(0, 0, 0), down(0, 1, 1)], [merges(1, "x".repeat(200), null)]);
+    expect(rowGraphWidth(long, true, measure)).toBe(labelX(long) + MAX_LABEL_WIDTH + GRAPH_PADDING);
+  });
+
+  it("grows the column within one generation and setting, and starts over on a new one", () => {
+    let width = nextColumnWidth({ key: "", width: 44 }, "1:true", 120);
+    expect(width).toEqual({ key: "1:true", width: 120 });
+    width = nextColumnWidth(width, "1:true", 60); // narrower rows scrolled into view: no shrink
+    expect(width.width).toBe(120);
+    width = nextColumnWidth(width, "1:true", 180);
+    expect(width.width).toBe(180);
+    width = nextColumnWidth(width, "1:false", 44); // labels switched off
+    expect(width).toEqual({ key: "1:false", width: 44 });
+    expect(nextColumnWidth(width, "2:false", 0)).toBe(width); // nothing loaded yet: keep
+  });
+});
+
+describe("relation labels: drawing", () => {
+  const fork = () =>
+    row("commit", 0, 0, [up(0, 0, 0), up(1, 0, 2), down(0, 0, 0)], [branchedFrom(1, "topic", "main")]);
+  const merge = () =>
+    row("commit", 0, 0, [up(0, 0, 0), down(0, 0, 0), down(0, 1, 3)], [merges(1, "feature", "main")]);
+
+  it("draws nothing when labels are off", () => {
+    expect(named(draw([fork()], 0, 0, { labels: false, width: 400 }), "fillText")).toHaveLength(0);
+  });
+
+  it("draws labels in the upper and lower halves, in the color of the line they describe", () => {
+    const calls = draw([fork(), merge()], 2, 10, { labels: true, width: 400 });
+    const texts = named(calls, "fillText");
+    const x = GRAPH_PADDING + 2 * LANE_WIDTH + LABEL_GAP;
+    expect(texts).toEqual([
+      ["fillText", "branched from main", x, 2 * ROW_HEIGHT - 10 + ROW_HEIGHT / 4],
+      ["fillText", "feature merged into main", x, 3 * ROW_HEIGHT - 10 + (ROW_HEIGHT * 3) / 4],
+    ]);
+    const colorBefore = (index: number) =>
+      calls.slice(0, index).filter((call) => call[0] === "fillStyle=").pop()?.[1];
+    expect(colorBefore(calls.indexOf(texts[0]))).toBe(LIGHT_PALETTE[2]);
+    expect(colorBefore(calls.indexOf(texts[1]))).toBe(LIGHT_PALETTE[3]);
+    expect(named(calls, "font=")).toEqual([["font=", LABEL_FONT]]);
+    expect(named(calls, "globalAlpha=").pop()).toEqual(["globalAlpha=", 1]);
+  });
+
+  it("cuts labels at the canvas edge", () => {
+    const x = GRAPH_PADDING + 2 * LANE_WIDTH + LABEL_GAP;
+    const width = x + 60 + GRAPH_PADDING;
+    const [text] = named(draw([merge()], 0, 0, { labels: true, width }), "fillText");
+    expect(text[1]).toBe("feature m…");
+    expect(measure(text[1] as string)).toBeLessThanOrEqual(60);
+    expect((text[1] as string).endsWith("…")).toBe(true);
+  });
+
+  it("skips labels with no room at all", () => {
+    expect(named(draw([merge()], 0, 0, { labels: true, width: 50 }), "fillText")).toHaveLength(0);
   });
 });
 
