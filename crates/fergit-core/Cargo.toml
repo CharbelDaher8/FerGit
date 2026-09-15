@@ -11,6 +11,7 @@ specta = ["dep:specta", "dep:specta-typescript", "fergit-graph/specta"]
 [dependencies]
 fergit-graph.workspace = true
 gix.workspace = true
+notify-debouncer-mini.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 specta = { workspace = true, optional = true, features = ["derive"] }

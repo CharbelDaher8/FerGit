@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
 use fergit_graph::{GraphRow, Layout};
 
-use crate::repo::{History, Repo, RepoError};
+use crate::repo::{History, Repo, RepoError, RepoWatcher};
 use crate::types::{
     CommitDetails, Generation, Oid, RefKind, RefLabel, RepoInfo, Row, RowKind, RowLocation, RowsPage,
 };
@@ -63,6 +63,27 @@ impl Session {
         let next = Arc::new(Snapshot::build(self.repo.read_history()?, next_generation()));
         *self.current.write().unwrap_or_else(PoisonError::into_inner) = Arc::clone(&next);
         Ok(self.info_for(&next))
+    }
+
+    /// Keeps the session current: refreshes, on a background thread, whenever the repository may
+    /// have changed, and calls `on_change` with the new info when the generation changed.
+    ///
+    /// A refresh that fails in the background is dropped rather than reported: the repository may be
+    /// halfway through a git operation, and the next change or an explicit refresh surfaces a lasting
+    /// problem. Watching stops when the returned watcher is dropped; it doesn't keep the session alive.
+    pub fn watch(self: &Arc<Self>, on_change: impl Fn(RepoInfo) + Send + 'static) -> Result<RepoWatcher, RepoError> {
+        let session = Arc::downgrade(self);
+        self.repo.watch(move || {
+            let Some(session) = session.upgrade() else {
+                return;
+            };
+            let before = session.info().generation;
+            if let Ok(info) = session.refresh()
+                && info.generation != before
+            {
+                on_change(info);
+            }
+        })
     }
 
     /// Rows `start..start + len` of the current snapshot, clamped to the rows that exist.

@@ -15,9 +15,12 @@ mod details;
 mod history;
 mod status;
 mod walk;
+mod watch;
 
 use std::fmt;
 use std::path::{Path, PathBuf};
+
+pub use watch::RepoWatcher;
 
 use crate::types::{CommitDetails, Oid, RefLabel};
 
@@ -84,6 +87,15 @@ impl Repo {
     /// it stays cheap however long the history is.
     pub fn read_tips(&self) -> Result<Tips, RepoError> {
         history::read_tips(&self.repo.to_thread_local())
+    }
+
+    /// Calls `on_change`, on a background thread, whenever the repository may have changed: HEAD,
+    /// a ref, the index, the stash or a worktree file, reported once per burst of activity. A report
+    /// can turn out not to matter (a file in an ignored directory changed); a change that matters
+    /// is always reported. Watching stops when the returned watcher is dropped.
+    pub fn watch(&self, on_change: impl FnMut() + Send + 'static) -> Result<RepoWatcher, RepoError> {
+        let repo = self.repo.to_thread_local();
+        watch::watch(repo.git_dir(), repo.workdir(), on_change)
     }
 
     /// Summary line and author of each commit in `ids`, in the same order. Ids that don't name a
