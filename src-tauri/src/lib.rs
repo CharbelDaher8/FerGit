@@ -6,13 +6,13 @@
 use std::path::Path;
 use std::sync::{Arc, PoisonError, RwLock};
 
-use fergit_core::repo::RepoError;
+use fergit_core::repo::{RepoError, RepoWatcher};
 use fergit_core::session::Session;
 use fergit_core::{CommitDetails, Oid, RepoInfo, RowLocation, RowsPage};
 use serde::Serialize;
 use specta_typescript::Typescript;
-use tauri::State;
-use tauri_specta::{Builder, ErrorHandlingMode, collect_commands};
+use tauri::{AppHandle, State};
+use tauri_specta::{Builder, ErrorHandlingMode, Event, collect_commands, collect_events};
 
 /// The error every command rejects with. The UI shows `message`; `kind` only picks wording.
 #[derive(Debug, Serialize, specta::Type, thiserror::Error)]
@@ -50,18 +50,31 @@ impl From<RepoError> for AppError {
     }
 }
 
+/// Sent when the open repository changed on disk and a newer snapshot is current. Carries what
+/// `refresh` would return, so the UI handles both the same way.
+#[derive(Debug, Clone, Serialize, specta::Type, tauri_specta::Event)]
+pub struct RepoChanged(RepoInfo);
+
+struct OpenRepo {
+    session: Arc<Session>,
+    /// Emits [`RepoChanged`]; `None` if watching failed, in which case changes show up on the next
+    /// explicit refresh instead.
+    _watcher: Option<RepoWatcher>,
+}
+
 /// App-wide state. One repository is open at a time for now.
 #[derive(Default)]
 struct AppState {
-    session: RwLock<Option<Arc<Session>>>,
+    open: RwLock<Option<OpenRepo>>,
 }
 
 impl AppState {
     fn session(&self) -> Result<Arc<Session>, AppError> {
-        self.session
+        self.open
             .read()
             .unwrap_or_else(PoisonError::into_inner)
-            .clone()
+            .as_ref()
+            .map(|open| Arc::clone(&open.session))
             .ok_or_else(|| AppError::new(ErrorKind::NoRepository, "No repository is open."))
     }
 }
@@ -76,13 +89,18 @@ async fn blocking<T: Send + 'static>(
         .map_err(AppError::from)
 }
 
-/// Opens the repository containing `path`, replacing any open repository.
+/// Opens the repository containing `path`, replacing any open repository, and starts emitting
+/// `repoChanged` events for it.
 #[tauri::command]
 #[specta::specta]
-async fn open_repo(state: State<'_, AppState>, path: String) -> Result<RepoInfo, AppError> {
+async fn open_repo(app: AppHandle, state: State<'_, AppState>, path: String) -> Result<RepoInfo, AppError> {
     let session = Arc::new(blocking(move || Session::open(Path::new(&path))).await?);
+    // Emitting fails only while the app shuts down, when nobody is listening anyway.
+    let watcher = session.watch(move |info| drop(RepoChanged(info).emit(&app))).ok();
     let info = session.info();
-    *state.session.write().unwrap_or_else(PoisonError::into_inner) = Some(session);
+    // Replacing the previous repository drops its watcher. An event it already sent carries an
+    // older generation than any of this repository's, so the UI ignores it.
+    *state.open.write().unwrap_or_else(PoisonError::into_inner) = Some(OpenRepo { session, _watcher: watcher });
     Ok(info)
 }
 
@@ -122,6 +140,7 @@ async fn commit_details(state: State<'_, AppState>, id: Oid) -> Result<Option<Co
 fn specta_builder() -> Builder<tauri::Wry> {
     Builder::<tauri::Wry>::new()
         .commands(collect_commands![open_repo, refresh, rows, locate, commit_details])
+        .events(collect_events![RepoChanged])
         .error_handling(ErrorHandlingMode::Throw)
 }
 
