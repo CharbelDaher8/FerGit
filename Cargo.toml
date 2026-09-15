@@ -1,0 +1,33 @@
+[workspace]
+resolver = "3"
+members = ["crates/fergit-graph", "crates/fergit-core", "src-tauri"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+
+[workspace.dependencies]
+fergit-graph = { path = "crates/fergit-graph" }
+fergit-core = { path = "crates/fergit-core" }
+
+gix = "0.87.1"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1"
+thiserror = "2.0.20"
+
+tauri = "2.11.5"
+tauri-build = "2.6.3"
+tauri-plugin-dialog = "2.7.3"
+specta = "=2.0.0-rc.25"
+specta-typescript = "=0.0.12"
+tauri-specta = { version = "=2.0.0-rc.25", features = ["derive", "typescript"] }
+
+insta = "1.48.0"
+proptest = "1.11.0"
+tempfile = "3.27.0"
+
+# gix is slow in debug builds; optimize dependencies even in dev so that
+# walking large histories during development reflects real behavior.
+[profile.dev.package."*"]
+opt-level = 2
