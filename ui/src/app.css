@@ -1,0 +1,171 @@
+/* Global theme tokens and base styles. Components style themselves with these variables. */
+
+:root {
+  color-scheme: light dark;
+
+  --font-ui: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "Cascadia Mono", "Cascadia Code", Consolas, "SF Mono", Menlo, monospace;
+
+  --bg: #ffffff;
+  --bg-subtle: #f6f8fa;
+  --bg-hover: #f0f3f6;
+  --bg-selected: #dcebff;
+  --bg-selected-blur: #e9edf2;
+  --fg: #1f2328;
+  --fg-muted: #59636e;
+  --fg-subtle: #818b98;
+  --border: #d9dee3;
+  --border-strong: #c2c9d1;
+  --focus: #0969da;
+  --placeholder: #eaeef2;
+  --scrollbar: #c2c9d1;
+
+  --button-bg: #f6f8fa;
+  --button-hover: #eef1f4;
+  --primary-bg: #0969da;
+  --primary-hover: #0860ca;
+  --primary-fg: #ffffff;
+
+  --danger-bg: #ffebe9;
+  --danger-border: #ffcecb;
+  --danger-fg: #a40e26;
+
+  /* Text on a solid lane-colored badge. */
+  --on-lane: #ffffff;
+  --ref-head: #cf222e;
+  --ref-tag: #9a6700;
+  --ref-stash: #8250df;
+
+  --status-added: #1a7f37;
+  --status-modified: #9a6700;
+  --status-deleted: #cf222e;
+  --status-renamed: #8250df;
+  --status-copied: #0e7c86;
+  --status-type: #59636e;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #16191d;
+    --bg-subtle: #1c2025;
+    --bg-hover: #22272e;
+    --bg-selected: #1e3a5f;
+    --bg-selected-blur: #2a3038;
+    --fg: #e1e4e8;
+    --fg-muted: #9aa4af;
+    --fg-subtle: #6e7781;
+    --border: #2d333b;
+    --border-strong: #3d444d;
+    --focus: #4c9aff;
+    --placeholder: #262b31;
+    --scrollbar: #3d444d;
+
+    --button-bg: #22272e;
+    --button-hover: #2d333b;
+    --primary-bg: #1f6feb;
+    --primary-hover: #388bfd;
+    --primary-fg: #ffffff;
+
+    --danger-bg: #3b1d20;
+    --danger-border: #6e2b30;
+    --danger-fg: #ffa198;
+
+    --on-lane: #0d1117;
+    --ref-head: #ff7b72;
+    --ref-tag: #d29922;
+    --ref-stash: #bc8cff;
+
+    --status-added: #3fb950;
+    --status-modified: #d29922;
+    --status-deleted: #ff7b72;
+    --status-renamed: #bc8cff;
+    --status-copied: #39c5cf;
+    --status-type: #9aa4af;
+  }
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--fg);
+  font: 13px/1.4 var(--font-ui);
+  -webkit-font-smoothing: antialiased;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+}
+
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+
+* {
+  scrollbar-color: var(--scrollbar) transparent;
+}
+
+/* Buttons shared by the shell and the panels. */
+.button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 5px;
+  background: var(--button-bg);
+  cursor: default;
+  white-space: nowrap;
+}
+
+.button:hover:not(:disabled) {
+  background: var(--button-hover);
+}
+
+.button:disabled {
+  opacity: 0.55;
+}
+
+.button.primary {
+  border-color: transparent;
+  background: var(--primary-bg);
+  color: var(--primary-fg);
+}
+
+.button.primary:hover:not(:disabled) {
+  background: var(--primary-hover);
+}
+
+.icon-button {
+  display: inline-grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--fg-muted);
+  font-size: 16px;
+  line-height: 1;
+}
+
+.icon-button:hover {
+  background: var(--button-hover);
+  color: var(--fg);
+}
