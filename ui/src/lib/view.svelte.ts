@@ -215,6 +215,34 @@ export class RepoView {
     return true;
   }
 
+  /**
+   * Moves the selection `rows` down (negative: up) and scrolls it into view, as the arrow keys do.
+   * Without a selection, selects the row at the top of the viewport.
+   */
+  moveSelection(rows: number): void {
+    if (this.total === 0) return;
+    this.select(this.#selected === null ? this.#topRow() : this.#selected + rows, true);
+  }
+
+  /** Moves the selection by `pages` viewports (0.5 for half a page), as Page Down and Up do. */
+  pageSelection(pages: number): void {
+    if (this.total === 0) return;
+    const perPage = Math.max(1, Math.floor(this.#height / ROW_HEIGHT) - 1);
+    const rows = Math.sign(pages) * Math.max(1, Math.round(Math.abs(pages) * perPage));
+    this.select((this.#selected ?? this.#topRow()) + rows, true);
+  }
+
+  /** Selects row `index` (clamped) or the last row, and scrolls it into view. */
+  selectRow(index: number | "last"): void {
+    if (this.total === 0) return;
+    this.select(index === "last" ? this.total - 1 : index, true);
+  }
+
+  /** The row at the viewport's top edge, where keyboard movement starts without a selection. */
+  #topRow(): number {
+    return Math.min(this.total - 1, Math.ceil(this.#offset / ROW_HEIGHT));
+  }
+
   /** Follows a refresh result or change event; the view stays on the same content. */
   adopt(info: RepoInfo): void {
     this.#rows.adopt(info);

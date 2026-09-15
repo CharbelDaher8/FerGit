@@ -322,6 +322,52 @@ describe("RepoView compare mode", () => {
   });
 });
 
+describe("RepoView keyboard movement", () => {
+  it("moves like the arrow keys, starting at the top visible row without a selection", async () => {
+    const view = await openView(3 * ROW_HEIGHT, null);
+    view.moveSelection(1);
+    expect(view.selected).toBe(3);
+    view.moveSelection(5);
+    expect(view.selected).toBe(8);
+    view.moveSelection(-20);
+    expect(view.selected).toBe(0);
+    expect(view.scrollRequest).toEqual({ offset: 0 }); // revealed
+  });
+
+  it("moves by pages and half pages of the viewport", async () => {
+    const view = await openView(0, 10); // 10 rows visible: a page is 9 rows, half a page 5
+    view.pageSelection(1);
+    expect(view.selected).toBe(19);
+    view.pageSelection(-0.5);
+    expect(view.selected).toBe(14);
+    view.pageSelection(0.5);
+    expect(view.selected).toBe(19);
+    view.pageSelection(-1);
+    expect(view.selected).toBe(10);
+  });
+
+  it("jumps to a row or the last row, clamped, and reveals it", async () => {
+    const view = await openView(0, 1);
+    view.selectRow("last");
+    expect(view.selected).toBe(99);
+    expect(view.scrollRequest).toEqual({ offset: 100 * ROW_HEIGHT - HEIGHT });
+    view.selectRow(19);
+    expect(view.selected).toBe(19);
+    view.selectRow(5000);
+    expect(view.selected).toBe(99);
+    view.selectRow(0);
+    expect(view.scrollRequest).toEqual({ offset: 0 });
+  });
+
+  it("leaves compare mode, like any keyboard selection", async () => {
+    const view = await openView(0, 2);
+    view.compare(5);
+    view.moveSelection(1);
+    expect(view.compared).toBeNull();
+    expect(view.selected).toBe(3);
+  });
+});
+
 describe("RepoView navigation", () => {
   it("goes to a commit: selects its row and scrolls it into view", async () => {
     const view = await openView(0, 1);
