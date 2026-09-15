@@ -57,8 +57,26 @@ pub fn git_at(cwd: &Path, args: &[&str], time: i64) -> String {
 /// Runs git in `cwd` with author and committer date `date` in git's internal format
 /// (`<seconds> <±hhmm>`) and returns its stdout. Panics if git fails.
 pub fn git_dated(cwd: &Path, args: &[&str], date: &str) -> String {
+    let output = git_command(cwd, args, date).output().expect("run git");
+    assert!(
+        output.status.success(),
+        "git {args:?} failed in {}:\n{}",
+        cwd.display(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).expect("git output is UTF-8")
+}
+
+/// Runs git in `cwd` at time [`T0`] and returns whether it succeeded, for commands expected to fail
+/// (a merge that stops with conflicts).
+pub fn git_succeeds(cwd: &Path, args: &[&str]) -> bool {
+    git_command(cwd, args, &format!("{T0} +0000")).output().expect("run git").status.success()
+}
+
+fn git_command(cwd: &Path, args: &[&str], date: &str) -> Command {
     let home = isolated_home();
-    let output = Command::new("git")
+    let mut command = Command::new("git");
+    command
         .current_dir(cwd)
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_CONFIG_GLOBAL", home.join("gitconfig"))
@@ -72,16 +90,8 @@ pub fn git_dated(cwd: &Path, args: &[&str], date: &str) -> String {
         .env("GIT_COMMITTER_DATE", date)
         .args(["-c", "init.defaultBranch=main", "-c", "commit.gpgSign=false", "-c", "tag.gpgSign=false"])
         .args(["-c", "core.autocrlf=false", "-c", "core.fsmonitor=false"])
-        .args(args)
-        .output()
-        .expect("run git");
-    assert!(
-        output.status.success(),
-        "git {args:?} failed in {}:\n{}",
-        cwd.display(),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    String::from_utf8(output.stdout).expect("git output is UTF-8")
+        .args(args);
+    command
 }
 
 /// Writes `contents` to `file` (a `/`-separated path relative to `repo`), creating directories.
