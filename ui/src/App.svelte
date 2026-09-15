@@ -1,15 +1,53 @@
 <script lang="ts">
   import { open } from "@tauri-apps/plugin-dialog";
+  import { untrack } from "svelte";
+  import type { FileChange } from "./lib/bindings";
   import DetailsPanel from "./lib/DetailsPanel.svelte";
+  import DiffView from "./lib/DiffView.svelte";
   import GraphView from "./lib/GraphView.svelte";
+  import { Inspector, subjectOf, type FileList } from "./lib/inspector.svelte";
   import { session } from "./lib/session.svelte";
 
   let detailsOpen = $state(true);
+  const inspector = new Inspector();
+  /** Where focus was when a diff opened; it goes back there when the diff closes. */
+  let focusBeforeDiff: HTMLElement | null = null;
 
-  const selectedRow = $derived.by(() => {
+  // Tell the inspector what is selected, and when the repository may have changed (including
+  // refreshes that leave the generation alone, which matter for the index and worktree).
+  $effect(() => {
     const view = session.view;
-    return view && view.selected !== null ? view.row(view.selected) : undefined;
+    const subject = view ? subjectOf(view) : ({ kind: "none" } as const);
+    const head = session.info?.head ?? null;
+    const version = `${view?.generation ?? 0}:${session.updates}`;
+    untrack(() => inspector.show(subject, head, version));
   });
+  $effect(() => () => inspector.dispose());
+
+  function openFile(list: FileList, file: FileChange): void {
+    if (!inspector.diff) {
+      focusBeforeDiff = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    }
+    inspector.openFile(list, file);
+  }
+
+  function closeDiff(): void {
+    inspector.closeDiff();
+    focusBeforeDiff?.focus();
+    focusBeforeDiff = null;
+  }
+
+  function onkeydown(event: KeyboardEvent): void {
+    if (event.key !== "Escape" || event.defaultPrevented) return;
+    const view = session.view;
+    if (inspector.diff) {
+      event.preventDefault();
+      closeDiff();
+    } else if (view && view.compared !== null) {
+      event.preventDefault();
+      view.compare(null);
+    }
+  }
 
   async function openRepository(path: string): Promise<void> {
     await session.open(path);
@@ -35,7 +73,7 @@
   }
 </script>
 
-<svelte:window onfocus={() => session.refreshSoon()} />
+<svelte:window onfocus={() => session.refreshSoon()} {onkeydown} />
 
 <div class="app">
   <header class="topbar">
@@ -73,9 +111,26 @@
 
   <main class="main">
     {#if session.view}
-      <GraphView view={session.view} onactivate={() => (detailsOpen = true)} />
+      <div class="primary">
+        <!-- The graph stays laid out under an open diff, so closing the diff finds it unchanged. -->
+        <div class="graph-layer" inert={inspector.diff !== null}>
+          <GraphView view={session.view} onactivate={() => (detailsOpen = true)} />
+        </div>
+        {#if inspector.diff}
+          <div class="diff-layer">
+            {#key inspector.diff.request}
+              <DiffView diff={inspector.diff} onclose={closeDiff} />
+            {/key}
+          </div>
+        {/if}
+      </div>
       {#if detailsOpen && session.view.selected !== null}
-        <DetailsPanel view={session.view} row={selectedRow} onclose={() => (detailsOpen = false)} />
+        <DetailsPanel
+          view={session.view}
+          {inspector}
+          onopen={openFile}
+          onclose={() => (detailsOpen = false)}
+        />
       {/if}
     {:else}
       <div class="empty">
@@ -165,6 +220,27 @@
     display: flex;
     flex: 1;
     min-height: 0;
+  }
+
+  .primary {
+    position: relative;
+    display: flex;
+    flex: 1;
+    min-width: 0;
+  }
+
+  .graph-layer {
+    display: flex;
+    flex: 1;
+    min-width: 0;
+  }
+
+  .diff-layer {
+    position: absolute;
+    inset: 0;
+    z-index: 3;
+    display: flex;
+    background: var(--bg);
   }
 
   .empty {

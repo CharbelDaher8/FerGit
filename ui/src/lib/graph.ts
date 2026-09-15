@@ -68,10 +68,10 @@ export function lanesUsed(row: Row): number {
 }
 
 /**
- * Maps between the scroll container's `scrollTop` and the content offset (row index ×
- * `ROW_HEIGHT`) it stands for. The two are equal unless the history is taller than
+ * Maps between a scroll container's `scrollTop` and the content offset (item index × item height,
+ * `ROW_HEIGHT` unless given) it stands for. The two are equal unless the content is taller than
  * `MAX_SCROLL_HEIGHT`, in which case the scroll range is compressed linearly so that its ends still
- * reach the first and last rows.
+ * reach the first and last items.
  */
 export interface ScrollMap {
   /** Height to give the scrollable content. */
@@ -80,8 +80,8 @@ export interface ScrollMap {
   toScroll(contentOffset: number): number;
 }
 
-export function scrollMap(rowCount: number, viewHeight: number): ScrollMap {
-  const contentHeight = rowCount * ROW_HEIGHT;
+export function scrollMap(rowCount: number, viewHeight: number, itemHeight = ROW_HEIGHT): ScrollMap {
+  const contentHeight = rowCount * itemHeight;
   if (contentHeight <= MAX_SCROLL_HEIGHT || viewHeight >= MAX_SCROLL_HEIGHT) {
     return { height: contentHeight, toContent: (top) => top, toScroll: (offset) => offset };
   }

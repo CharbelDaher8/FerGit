@@ -86,6 +86,13 @@ describe("scrollMap", () => {
     expect(map.toScroll(1234)).toBe(1234);
   });
 
+  it("sizes content by the given item height", () => {
+    expect(scrollMap(1000, 600, 20).height).toBe(20_000);
+    const tall = scrollMap(1_000_000, 600, 20);
+    expect(tall.height).toBe(MAX_SCROLL_HEIGHT);
+    expect(tall.toContent(MAX_SCROLL_HEIGHT - 600)).toBeCloseTo(1_000_000 * 20 - 600, 3);
+  });
+
   it("compresses tall histories so both ends stay reachable", () => {
     const rows = 2_000_000;
     const view = 600;

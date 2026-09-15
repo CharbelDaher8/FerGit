@@ -1,31 +1,27 @@
-<!-- Details of the selected row: message, signatures, parents and changed files. -->
+<!--
+  Details of the selection, as the Inspector loads them: a commit's message, signatures, parents and
+  files; the staged and unstaged files of uncommitted changes; or the files between two compared
+  commits. Clicking a file opens its diff.
+-->
 <script lang="ts">
-  import { untrack } from "svelte";
-  import {
-    commands,
-    type ChangeStatus,
-    type CommitDetails,
-    type Oid,
-    type Row,
-    type Signature,
-  } from "./bindings";
+  import type { ChangeStatus, FileChange, Oid, Signature } from "./bindings";
   import { formatSignatureTime, shortId } from "./format";
+  import { subjectKey, type FileList, type Inspector, type ListKey } from "./inspector.svelte";
   import type { RepoView } from "./view.svelte";
 
   interface Props {
-    /** Where the selected row lives; parent links navigate within it. */
+    /** Where the selection lives; parent links navigate within it. */
     view: RepoView;
-    /** The selected row; `undefined` while its page is loading. */
-    row: Row | undefined;
+    inspector: Inspector;
+    /** Opens the diff of `file` from `list`. */
+    onopen: (list: FileList, file: FileChange) => void;
     onclose: () => void;
   }
 
-  let { view, row, onclose }: Props = $props();
+  let { view, inspector, onopen, onclose }: Props = $props();
 
-  /** Files rendered before asking; a huge commit would otherwise freeze the panel. */
+  /** Files rendered per list before asking; a huge commit would otherwise freeze the panel. */
   const FILE_LIMIT = 500;
-  /** Holding an arrow key moves the selection faster than details need to load. */
-  const LOAD_DELAY_MS = 60;
 
   const STATUS_LETTER: Record<ChangeStatus, string> = {
     added: "A",
@@ -36,32 +32,26 @@
     typeChanged: "T",
   };
 
-  /** Details of the last commit loaded; `details` is `null` if the id wasn't a commit. */
-  let loaded = $state.raw<{ id: string; details: CommitDetails | null } | null>(null);
-  let showAllFiles = $state(false);
+  const LIST_TITLE: Record<ListKey, string> = {
+    commit: "Changed files",
+    staged: "Staged",
+    unstaged: "Unstaged",
+    range: "Changed files",
+  };
 
-  const wantedId = $derived(row && row.kind !== "workingTree" ? row.id : null);
-  /** `undefined` while loading. */
-  const details = $derived(loaded && loaded.id === wantedId ? loaded.details : undefined);
-  const subject = $derived(details ? details.message.split("\n", 1)[0] : "");
-  const body = $derived(details ? details.message.slice(subject.length).replace(/^\s*\n/, "").trimEnd() : "");
-  const files = $derived(
-    details && !showAllFiles ? details.files.slice(0, FILE_LIMIT) : (details?.files ?? []),
-  );
-
-  $effect(() => {
-    const id = wantedId;
-    if (id === null || untrack(() => loaded?.id) === id) return;
-    const timer = setTimeout(() => {
-      void commands.commitDetails(id).then((result) => {
-        // The selection may have moved on while this was loading.
-        if (wantedId !== id) return;
-        loaded = { id, details: result };
-        showAllFiles = false;
-      });
-    }, LOAD_DELAY_MS);
-    return () => clearTimeout(timer);
+  const subject = $derived(inspector.subject);
+  const key = $derived(subjectKey(subject));
+  const details = $derived(inspector.details);
+  const selectedRow = $derived(view.selected === null ? undefined : view.row(view.selected));
+  const comparison = $derived(view.comparison);
+  const message = $derived.by(() => {
+    if (!details) return { subject: "", body: "" };
+    const first = details.message.split("\n", 1)[0];
+    return { subject: first, body: details.message.slice(first.length).replace(/^\s*\n/, "").trimEnd() };
   });
+
+  /** Lists showing all their files, as `subjectKey/listKey`. */
+  let expanded = $state.raw(new Set<string>());
 
   /** Row of each parent in the snapshot on screen: absent while looking up, `null` if not shown. */
   let parentRows = $state.raw(new Map<Oid, number | null>());
@@ -88,75 +78,32 @@
   </dd>
 {/snippet}
 
-<aside class="details" aria-label="Commit details">
-  <header class="details-header">
-    <span class="title">
-      {#if row?.kind === "workingTree"}
-        Uncommitted changes
-      {:else if row}
-        {row.kind === "stash" ? "Stash" : "Commit"} <span class="mono">{shortId(row.id)}</span>
-      {:else}
-        Loading…
-      {/if}
-    </span>
-    <button class="icon-button" aria-label="Close details" title="Close details" onclick={onclose}
-      >×</button
-    >
-  </header>
-
-  <div class="details-body">
-    {#if !row}
-      <p class="note">Loading…</p>
-    {:else if row.kind === "workingTree"}
-      <p class="note">
-        This row stands for changes in the working tree and index that aren't committed yet.
-        Viewing them isn't supported yet.
-      </p>
-    {:else if details === undefined}
-      <p class="subject">{row.summary}</p>
-      <p class="note">Loading details…</p>
-    {:else if details === null}
-      <p class="note">This row isn't a commit, so there are no details to show.</p>
-    {:else}
-      <p class="subject">{subject}</p>
-      {#if body}
-        <pre class="message">{body}</pre>
-      {/if}
-
-      <dl class="meta">
-        {@render signature("Author", details.author)}
-        {@render signature("Committer", details.committer)}
-        <dt>Parents</dt>
-        <dd class="mono">
-          {#each details.parents as parent}
-            {@const target = parentRows.get(parent)}
-            {#if target === undefined || target === null}
-              <span
-                class="parent"
-                class:unavailable={target === null}
-                title={target === null ? "Not in this view" : parent}>{shortId(parent)}</span
-              >
-            {:else}
-              <button class="parent link" title="Go to {parent}" onclick={() => view.goTo(parent)}
-                >{shortId(parent)}</button
-              >
-            {/if}
-          {:else}
-            <span class="none">none</span>
-          {/each}
-        </dd>
-        <dt>Commit</dt>
-        <dd class="mono id">{details.id}</dd>
-      </dl>
-
-      <h2 class="files-heading">
-        {details.files.length === 1 ? "1 file changed" : `${details.files.length} files changed`}
-      </h2>
-      <ul class="files">
-        {#each files as file}
-          <li class="file">
-            <span class="status status-{file.status}" title={file.status}>{STATUS_LETTER[file.status]}</span>
-            <span class="path" title={file.oldPath === null ? file.path : `${file.oldPath} → ${file.path}`}>
+{#snippet fileList(list: FileList)}
+  {@const listId = `${key}/${list.key}`}
+  <h2 class="files-heading">
+    {LIST_TITLE[list.key]}
+    {#if list.files}<span class="count">{list.files.length}</span>{/if}
+  </h2>
+  {#if list.files === undefined}
+    <p class="note">Loading…</p>
+  {:else if list.files.length === 0}
+    <p class="note">No changes.</p>
+  {:else}
+    {@const shown = expanded.has(listId) ? list.files : list.files.slice(0, FILE_LIMIT)}
+    <ul class="files">
+      {#each shown as file}
+        {@const request = inspector.diff?.request}
+        {@const isOpen = request?.list === list.key && request.path === file.path}
+        <li>
+          <button
+            class="file"
+            class:open={isOpen}
+            aria-current={isOpen ? "true" : undefined}
+            title={file.oldPath === null ? file.path : `${file.oldPath} → ${file.path}`}
+            onclick={() => onopen(list, file)}
+          >
+            <span class="status status-{file.status}">{STATUS_LETTER[file.status]}</span>
+            <span class="path">
               {#if file.oldPath !== null}
                 <span class="old-path">{file.oldPath}</span> <span class="arrow">→</span>
               {/if}
@@ -170,14 +117,106 @@
                 <span class="deletions">−{file.deletions}</span>
               {/if}
             </span>
-          </li>
-        {/each}
-      </ul>
-      {#if files.length < details.files.length}
-        <button class="button show-all" onclick={() => (showAllFiles = true)}>
-          Show all {details.files.length} files
-        </button>
+          </button>
+        </li>
+      {/each}
+    </ul>
+    {#if shown.length < list.files.length}
+      <button class="button show-all" onclick={() => (expanded = new Set(expanded).add(listId))}>
+        Show all {list.files.length} files
+      </button>
+    {/if}
+  {/if}
+{/snippet}
+
+<aside class="details" aria-label="Details">
+  <header class="details-header">
+    <span class="title">
+      {#if subject.kind === "range"}
+        Comparing <span class="mono">{shortId(subject.older)}</span> →
+        <span class="mono">{shortId(subject.newer)}</span>
+      {:else if subject.kind === "worktree"}
+        Uncommitted changes
+      {:else if subject.kind === "commit"}
+        {selectedRow?.kind === "stash" ? "Stash" : "Commit"} <span class="mono">{shortId(subject.id)}</span>
+      {:else}
+        Loading…
       {/if}
+    </span>
+    <button class="icon-button" aria-label="Close details" title="Close details" onclick={onclose}
+      >×</button
+    >
+  </header>
+
+  <div class="details-body">
+    {#if subject.kind === "range"}
+      {@const older = comparison ? view.row(comparison.older) : undefined}
+      {@const newer = comparison ? view.row(comparison.newer) : undefined}
+      <p class="note">
+        Changes from the older commit (A) to the newer one (B). Click a row or press Esc to stop
+        comparing.
+      </p>
+      <dl class="meta">
+        <dt>A</dt>
+        <dd><span class="mono">{shortId(subject.older)}</span> {older?.summary ?? ""}</dd>
+        <dt>B</dt>
+        <dd><span class="mono">{shortId(subject.newer)}</span> {newer?.summary ?? ""}</dd>
+      </dl>
+      {#each inspector.lists as list (list.key)}
+        {@render fileList(list)}
+      {/each}
+    {:else if subject.kind === "worktree"}
+      <p class="note">
+        Staged files are what the next commit would contain; unstaged changes exist only in the
+        working tree.
+      </p>
+      {#each inspector.lists as list (list.key)}
+        {@render fileList(list)}
+      {/each}
+    {:else if subject.kind === "commit"}
+      {#if details === undefined}
+        <p class="subject">{selectedRow?.summary ?? ""}</p>
+        <p class="note">Loading details…</p>
+      {:else if details === null}
+        <p class="note">This row isn't a commit, so there are no details to show.</p>
+      {:else}
+        <p class="subject">{message.subject}</p>
+        {#if message.body}
+          <pre class="message">{message.body}</pre>
+        {/if}
+
+        <dl class="meta">
+          {@render signature("Author", details.author)}
+          {@render signature("Committer", details.committer)}
+          <dt>Parents</dt>
+          <dd class="mono">
+            {#each details.parents as parent}
+              {@const target = parentRows.get(parent)}
+              {#if target === undefined || target === null}
+                <span
+                  class="parent"
+                  class:unavailable={target === null}
+                  title={target === null ? "Not in this view" : parent}>{shortId(parent)}</span
+                >
+              {:else}
+                <button class="parent link" title="Go to {parent}" onclick={() => view.goTo(parent)}
+                  >{shortId(parent)}</button
+                >
+              {/if}
+            {:else}
+              <span class="none">none</span>
+            {/each}
+          </dd>
+          <dt>Commit</dt>
+          <dd class="mono id">{details.id}</dd>
+        </dl>
+
+        {#each inspector.lists as list (list.key)}
+          {@render fileList(list)}
+        {/each}
+      {/if}
+    {:else}
+      <p class="note">Loading…</p>
     {/if}
   </div>
 </aside>
@@ -246,7 +285,7 @@
     display: grid;
     grid-template-columns: max-content minmax(0, 1fr);
     gap: 6px 12px;
-    margin: 12px 0 16px;
+    margin: 12px 0 0;
     padding: 10px 0 0;
     border-top: 1px solid var(--border);
     font-size: 12px;
@@ -303,14 +342,25 @@
   }
 
   .files-heading {
-    margin: 0 0 6px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin: 16px 0 6px;
     color: var(--fg-muted);
     font-size: 11px;
     font-weight: 600;
   }
 
+  .count {
+    padding: 0 6px;
+    border-radius: 8px;
+    background: var(--button-hover);
+    font-weight: 400;
+    font-variant-numeric: tabular-nums;
+  }
+
   .files {
-    margin: 0;
+    margin: 0 -6px;
     padding: 0;
     list-style: none;
     font-size: 12px;
@@ -321,7 +371,21 @@
     grid-template-columns: 14px minmax(0, 1fr) auto;
     align-items: baseline;
     gap: 8px;
-    padding: 2px 0;
+    width: 100%;
+    padding: 2px 6px;
+    border: 0;
+    border-radius: 4px;
+    background: transparent;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .file:hover {
+    background: var(--bg-hover);
+  }
+
+  .file.open {
+    background: var(--bg-selected);
   }
 
   .status {
