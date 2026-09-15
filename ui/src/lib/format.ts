@@ -1,6 +1,6 @@
 // Text formatting shared by the graph rows and the details panel.
 
-import type { Oid } from "./bindings";
+import type { Oid, Upstream } from "./bindings";
 
 function pad2(value: number): string {
   return value < 10 ? `0${value}` : String(value);
@@ -33,4 +33,27 @@ export function formatSignatureTime(seconds: number, offsetMinutes: number): str
     `${pad2(date.getUTCHours())}:${pad2(date.getUTCMinutes())}:${pad2(date.getUTCSeconds())} ` +
     `${sign}${pad2(Math.floor(offset / 60))}${pad2(offset % 60)}`
   );
+}
+
+/**
+ * The compact status shown after a branch badge: `↑2 ↓1` (zero parts omitted, nothing when in
+ * sync), or `gone` when the upstream no longer exists. Empty without an upstream.
+ */
+export function upstreamSuffix(upstream: Upstream | null): string {
+  if (upstream === null) return "";
+  if (upstream.state.kind === "gone") return "gone";
+  const { ahead, behind } = upstream.state;
+  if (ahead > 0 && behind > 0) return `↑${ahead} ↓${behind}`;
+  if (ahead > 0) return `↑${ahead}`;
+  return behind > 0 ? `↓${behind}` : "";
+}
+
+/** The upstream status in words, for a tooltip: "2 ahead, 1 behind origin/main". */
+export function upstreamTitle(upstream: Upstream): string {
+  if (upstream.state.kind === "gone") return `${upstream.name} is gone`;
+  const { ahead, behind } = upstream.state;
+  if (ahead > 0 && behind > 0) return `${ahead} ahead, ${behind} behind ${upstream.name}`;
+  if (ahead > 0) return `${ahead} ahead of ${upstream.name}`;
+  if (behind > 0) return `${behind} behind ${upstream.name}`;
+  return `up to date with ${upstream.name}`;
 }

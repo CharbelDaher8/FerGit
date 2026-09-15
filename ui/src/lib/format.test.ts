@@ -1,5 +1,34 @@
 import { describe, expect, it } from "vitest";
-import { formatLocalTime, formatSignatureTime, shortId } from "./format";
+import type { Upstream } from "./bindings";
+import { formatLocalTime, formatSignatureTime, shortId, upstreamSuffix, upstreamTitle } from "./format";
+
+const tracking = (ahead: number, behind: number): Upstream => ({
+  name: "origin/main",
+  state: { kind: "tracking", ahead, behind },
+});
+const gone: Upstream = { name: "origin/main", state: { kind: "gone" } };
+
+describe("upstream status", () => {
+  it("shows ahead and behind counts, omitting zeros", () => {
+    expect(upstreamSuffix(tracking(2, 1))).toBe("↑2 ↓1");
+    expect(upstreamSuffix(tracking(3, 0))).toBe("↑3");
+    expect(upstreamSuffix(tracking(0, 4))).toBe("↓4");
+  });
+
+  it("shows nothing when in sync or without an upstream, and 'gone' when it is gone", () => {
+    expect(upstreamSuffix(tracking(0, 0))).toBe("");
+    expect(upstreamSuffix(null)).toBe("");
+    expect(upstreamSuffix(gone)).toBe("gone");
+  });
+
+  it("explains the status in the tooltip", () => {
+    expect(upstreamTitle(tracking(2, 1))).toBe("2 ahead, 1 behind origin/main");
+    expect(upstreamTitle(tracking(2, 0))).toBe("2 ahead of origin/main");
+    expect(upstreamTitle(tracking(0, 1))).toBe("1 behind origin/main");
+    expect(upstreamTitle(tracking(0, 0))).toBe("up to date with origin/main");
+    expect(upstreamTitle(gone)).toBe("origin/main is gone");
+  });
+});
 
 describe("format", () => {
   it("shortens ids to 8 characters", () => {
