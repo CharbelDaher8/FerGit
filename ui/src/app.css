@@ -42,6 +42,17 @@
   --status-renamed: #8250df;
   --status-copied: #0e7c86;
   --status-type: #59636e;
+
+  --diff-added-bg: #e6ffec;
+  --diff-added-gutter: #ccffd8;
+  --diff-removed-bg: #ffebe9;
+  --diff-removed-gutter: #ffd7d5;
+  --diff-hunk-bg: #ddf4ff;
+  --diff-hunk-fg: #59636e;
+
+  /* Rows being compared in the graph. */
+  --compare: #bf8700;
+  --compare-bg: #fff5d1;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -81,6 +92,16 @@
     --status-renamed: #bc8cff;
     --status-copied: #39c5cf;
     --status-type: #9aa4af;
+
+    --diff-added-bg: rgba(46, 160, 67, 0.15);
+    --diff-added-gutter: rgba(63, 185, 80, 0.3);
+    --diff-removed-bg: rgba(248, 81, 73, 0.15);
+    --diff-removed-gutter: rgba(248, 81, 73, 0.3);
+    --diff-hunk-bg: rgba(56, 139, 253, 0.15);
+    --diff-hunk-fg: #9aa4af;
+
+    --compare: #d29922;
+    --compare-bg: rgba(187, 128, 9, 0.2);
   }
 }
 

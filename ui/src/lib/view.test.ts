@@ -32,9 +32,12 @@ vi.mock("./bindings", () => ({
   },
 }));
 
+/** The id of the uncommitted-changes row. */
+const ZERO = "0".repeat(40);
+
 function makeRow(id: string): Row {
   return {
-    kind: "commit",
+    kind: id === ZERO ? "workingTree" : "commit",
     id,
     graph: { column: 0, color: 0, edges: [] },
     summary: id,
@@ -53,7 +56,7 @@ function ids(count: number, prefix = "c"): string[] {
 function snapshot(generation: number, rowIds: string[]): RepoInfo {
   backend.generation = generation;
   backend.ids = rowIds;
-  return { root: "/repo", name: "repo", generation, rowCount: rowIds.length };
+  return { root: "/repo", name: "repo", head: null, generation, rowCount: rowIds.length };
 }
 
 /** Lets pending commands, their follow-ups and re-anchoring run. */
@@ -78,15 +81,31 @@ beforeEach(() => {
 });
 
 describe("anchor math", () => {
-  const anchor = (offset: number, selected: number | null): Anchor =>
-    captureAnchor(offset, selected, (index) => makeRow(`c${index}`));
+  const anchor = (offset: number, selected: number | null, compared: number | null = null): Anchor =>
+    captureAnchor(offset, selected, compared, (index) => makeRow(`c${index}`));
 
-  it("captures the top row, the offset within it, and the selection", () => {
-    expect(anchor(70, 12)).toEqual({ offset: 70, topIndex: 2, topId: "c2", selected: 12, selectedId: "c12" });
-    const unloaded = captureAnchor(70, 12, () => undefined);
+  it("captures the top row, the offset within it, the selection and the compared row", () => {
+    expect(anchor(70, 12, 30)).toEqual({
+      offset: 70,
+      topIndex: 2,
+      topId: "c2",
+      selected: 12,
+      selectedId: "c12",
+      compared: 30,
+      comparedId: "c30",
+    });
+    const unloaded = captureAnchor(70, 12, 30, () => undefined);
     expect(unloaded.topId).toBeNull();
     expect(unloaded.selectedId).toBeNull();
-    expect(captureAnchor(70, null, () => undefined).selectedId).toBeNull();
+    expect(unloaded.comparedId).toBeNull();
+    expect(captureAnchor(70, null, null, () => undefined).selectedId).toBeNull();
+  });
+
+  it("moves the compared row with its commit, and clears it with the commit or the selection", () => {
+    expect(restoreAnchor(anchor(70, 12, 30), 2, 15, 33).compared).toBe(33);
+    expect(restoreAnchor(anchor(70, 12, 30), 2, 15, null).compared).toBeNull();
+    expect(restoreAnchor(anchor(70, 12, 30), 2, 15, undefined).compared).toBe(30);
+    expect(restoreAnchor(anchor(70, 12, 30), 2, null, 33).compared).toBeNull();
   });
 
   it("keeps the top row's pixel offset", () => {
@@ -113,6 +132,13 @@ describe("anchor math", () => {
   it("computes the row window with overscan, clamped", () => {
     expect(rowWindow(70, HEIGHT, 100)).toEqual({ first: 0, end: 13 + OVERSCAN });
     expect(rowWindow(90 * ROW_HEIGHT, HEIGHT, 100)).toEqual({ first: 90 - OVERSCAN, end: 100 });
+  });
+
+  it("computes windows for other item heights and overscans (the diff view's lines)", () => {
+    // 20px lines, 400px viewport scrolled to 1010px: lines 50..71 are visible, plus 30 on each side.
+    expect(rowWindow(1010, 400, 100_000, 20, 30)).toEqual({ first: 20, end: 101 });
+    expect(rowWindow(0, 400, 10, 20, 30)).toEqual({ first: 0, end: 10 });
+    expect(rowWindow(0, 0, 0, 20, 30)).toEqual({ first: 0, end: 0 });
   });
 });
 
@@ -212,7 +238,7 @@ describe("RepoView re-anchoring", () => {
 
   it("does nothing on a refresh with the same generation", async () => {
     const view = await openView(70, 10);
-    view.adopt({ root: "/repo", name: "repo", generation: 1, rowCount: 100 });
+    view.adopt({ root: "/repo", name: "repo", head: null, generation: 1, rowCount: 100 });
     await settle();
     expect(backend.locateCalls).toEqual([]);
     expect(view.scrollRequest).toBeNull();
@@ -227,6 +253,71 @@ describe("RepoView re-anchoring", () => {
     await settle();
     expect(view.row(0)?.id).toBe("other0");
     expect(backend.locateCalls).toEqual([]);
+  });
+});
+
+describe("RepoView compare mode", () => {
+  it("compares the selection with another loaded commit row", async () => {
+    const view = await openView(0, null);
+    expect(view.compare(5)).toBe(false); // nothing selected
+    view.select(2);
+    expect(view.compare(2)).toBe(false); // the selection itself
+    expect(view.compare(5)).toBe(true);
+    expect(view.compared).toBe(5);
+    expect(view.comparison).toEqual({ older: 5, newer: 2 });
+
+    view.select(8);
+    view.compare(3);
+    expect(view.comparison).toEqual({ older: 8, newer: 3 });
+  });
+
+  it("leaves compare mode on a plain selection or compare(null)", async () => {
+    const view = await openView(0, 2);
+    view.compare(5);
+    view.select(4);
+    expect(view.compared).toBeNull();
+    expect(view.comparison).toBeNull();
+    view.compare(6);
+    view.compare(null);
+    expect(view.comparison).toBeNull();
+    expect(view.selected).toBe(4);
+  });
+
+  it("doesn't compare uncommitted changes", async () => {
+    const view = new RepoView(snapshot(1, [ZERO, ...ids(20)]));
+    view.setViewport(0, HEIGHT);
+    await settle();
+    view.select(0);
+    expect(view.compare(3)).toBe(false);
+    view.select(3);
+    expect(view.compare(0)).toBe(false);
+    expect(view.compared).toBeNull();
+  });
+
+  it("keeps both compared commits when commits are added", async () => {
+    const view = await openView(70, 10);
+    view.compare(20);
+    view.adopt(snapshot(2, ["new1", "new0", ...ids(100)]));
+    await settle();
+    expect(view.selected).toBe(12);
+    expect(view.compared).toBe(22);
+    expect(view.row(22)?.id).toBe("c20");
+  });
+
+  it("stops comparing when the compared commit is gone", async () => {
+    const view = await openView(70, 10);
+    view.compare(20);
+    view.adopt(snapshot(2, ids(100).filter((id) => id !== "c20")));
+    await settle();
+    expect(view.selected).toBe(10);
+    expect(view.compared).toBeNull();
+  });
+
+  it("stops comparing when another repository is opened", async () => {
+    const view = await openView(0, 1);
+    view.compare(3);
+    view.replace(snapshot(9, ids(5, "other")));
+    expect(view.compared).toBeNull();
   });
 });
 

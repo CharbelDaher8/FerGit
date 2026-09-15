@@ -56,6 +56,7 @@
   const end = $derived(span.end);
   const indices = $derived(Array.from({ length: end - first }, (_, k) => first + k));
   const palette = $derived(dark ? DARK_PALETTE : LIGHT_PALETTE);
+  const comparison = $derived(view.comparison);
 
   // The graph column fits the widest visible row. Within one generation it only grows, so
   // scrolling never makes the text columns jump left; a new generation starts over once its rows
@@ -197,7 +198,8 @@
     const y = event.clientY - scroller.getBoundingClientRect().top + viewOffset;
     const index = Math.floor(y / ROW_HEIGHT);
     if (index < 0 || index >= total) return;
-    view.select(index);
+    // Ctrl+click (Cmd+click on macOS) compares with the selection; a plain click selects.
+    if (!((event.ctrlKey || event.metaKey) && view.compare(index))) view.select(index);
     onactivate();
   }
 </script>
@@ -235,6 +237,7 @@
             class="columns row"
             class:selected={i === view.selected}
             class:working-tree={row?.kind === "workingTree"}
+            class:compared={i === comparison?.older || i === comparison?.newer}
             role="option"
             aria-selected={i === view.selected}
             style:transform="translateY({i * ROW_HEIGHT + shift}px)"
@@ -243,6 +246,13 @@
             <span></span>
             {#if row}
               <span class="description">
+                {#if i === comparison?.older || i === comparison?.newer}
+                  <span
+                    class="compare-tag"
+                    title={i === comparison.older ? "Compared: older side (A)" : "Compared: newer side (B)"}
+                    >{i === comparison.older ? "A" : "B"}</span
+                  >
+                {/if}
                 {#each row.refs.slice(0, MAX_BADGES) as ref}
                   <span class="ref ref-{ref.kind}" class:current={ref.isHead} title={ref.fullName}
                     >{ref.name}</span
@@ -385,6 +395,24 @@
 
   .scroller:focus .row.selected {
     background: var(--bg-selected);
+  }
+
+  .scroller .row.compared {
+    background: var(--compare-bg);
+    box-shadow: inset 3px 0 0 var(--compare);
+  }
+
+  .compare-tag {
+    flex: none;
+    min-width: 16px;
+    padding: 0 4px;
+    border-radius: 3px;
+    background: var(--compare);
+    color: var(--on-lane);
+    font-size: 10px;
+    font-weight: 700;
+    line-height: 16px;
+    text-align: center;
   }
 
   .description {
