@@ -103,6 +103,8 @@ pub struct RepoInfo {
     pub name: String,
     pub generation: Generation,
     pub row_count: u32,
+    /// The commit HEAD points to; `None` in a repository without commits.
+    pub head: Option<Oid>,
 }
 
 /// A contiguous run of graph rows from one snapshot.
@@ -236,6 +238,72 @@ pub enum ChangeStatus {
     Renamed,
     Copied,
     TypeChanged,
+}
+
+/// One side of a comparison between two versions of the repository's files.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum DiffSide {
+    /// The files of a commit.
+    Commit { id: Oid },
+    /// The staged files: what the next commit would contain.
+    Index,
+    /// The files on disk as git would store them (line endings converted the way git would), plus
+    /// untracked files that aren't ignored.
+    Worktree,
+}
+
+/// How one file differs between two sides.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum FileDiff {
+    /// Changed lines in hunks with three lines of context, as `git diff` shows them. No hunks means
+    /// the contents are identical (a mode-only change, for example).
+    Text { hunks: Vec<Hunk> },
+    /// A side is binary: a NUL byte within its first 8000 bytes.
+    Binary,
+    /// A side is larger than 8 MiB.
+    TooLarge,
+    /// The path is a submodule on at least one side; `old` and `new` are the commits it points to,
+    /// `None` where that side has no submodule at the path.
+    Submodule { old: Option<Oid>, new: Option<Oid> },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+#[serde(rename_all = "camelCase")]
+pub struct Hunk {
+    /// First line of the hunk in the old version, 1-based; 0 when the hunk has no old lines (git's
+    /// `@@ -0,0 +1,3 @@`).
+    pub old_start: u32,
+    pub old_lines: u32,
+    /// First line of the hunk in the new version, 1-based; 0 when the hunk has no new lines.
+    pub new_start: u32,
+    pub new_lines: u32,
+    pub lines: Vec<DiffLine>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+#[serde(rename_all = "camelCase")]
+pub struct DiffLine {
+    pub kind: LineKind,
+    /// The line without its terminator.
+    pub text: String,
+    /// True if this is the last line of its version and that version doesn't end with a newline
+    /// (git's `\ No newline at end of file`).
+    pub no_final_newline: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+#[serde(rename_all = "camelCase")]
+pub enum LineKind {
+    Context,
+    Added,
+    Removed,
 }
 
 #[cfg(test)]

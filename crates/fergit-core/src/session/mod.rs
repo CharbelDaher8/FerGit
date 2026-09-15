@@ -13,7 +13,8 @@ use fergit_graph::{GraphRow, Layout};
 
 use crate::repo::{History, Repo, RepoError, RepoWatcher};
 use crate::types::{
-    CommitDetails, Generation, Oid, RefKind, RefLabel, RepoInfo, Row, RowKind, RowLocation, RowsPage,
+    CommitDetails, DiffSide, FileChange, FileDiff, Generation, Oid, RefKind, RefLabel, RepoInfo, Row, RowKind,
+    RowLocation, RowsPage,
 };
 
 /// The generation of the next snapshot any session in this process builds. Sharing it across
@@ -160,6 +161,23 @@ impl Session {
         self.repo.commit_details(id)
     }
 
+    /// Files that differ between `from` and `to`; see [`Repo::changes`]. Reads the repository as it
+    /// is now, not the snapshot: the index and worktree have no history to snapshot.
+    pub fn changes(&self, from: Option<DiffSide>, to: DiffSide) -> Result<Vec<FileChange>, RepoError> {
+        self.repo.changes(from, to)
+    }
+
+    /// How one file differs between `from` and `to`; see [`Repo::file_diff`].
+    pub fn file_diff(
+        &self,
+        from: Option<DiffSide>,
+        to: DiffSide,
+        path: &str,
+        old_path: Option<&str>,
+    ) -> Result<FileDiff, RepoError> {
+        self.repo.file_diff(from, to, path, old_path)
+    }
+
     fn snapshot(&self) -> Arc<Snapshot> {
         Arc::clone(&self.current.read().unwrap_or_else(PoisonError::into_inner))
     }
@@ -171,6 +189,7 @@ impl Session {
             name: root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
             generation: snapshot.generation,
             row_count: snapshot.row_count(),
+            head: snapshot.history.tips.head.id(),
         }
     }
 }

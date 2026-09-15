@@ -12,6 +12,7 @@
 //! reach are removed when the repository is opened; see [`disable_configured_programs`].
 
 mod details;
+mod diff;
 mod history;
 mod status;
 mod walk;
@@ -22,7 +23,7 @@ use std::path::{Path, PathBuf};
 
 pub use watch::RepoWatcher;
 
-use crate::types::{CommitDetails, Oid, RefLabel};
+use crate::types::{CommitDetails, DiffSide, FileChange, FileDiff, Oid, RefLabel};
 
 #[derive(Debug, thiserror::Error)]
 pub enum RepoError {
@@ -108,6 +109,26 @@ impl Repo {
     /// the empty tree for a root commit). `None` if `id` doesn't name a commit.
     pub fn commit_details(&self, id: Oid) -> Result<Option<CommitDetails>, RepoError> {
         details::details(&self.repo.to_thread_local(), id)
+    }
+
+    /// Files that differ between `from` and `to`, sorted by path, with renames detected as in
+    /// [`Repo::commit_details`]. A `from` of `None` compares against nothing, so every file of `to`
+    /// counts as added. Fails if a commit side doesn't name a commit.
+    pub fn changes(&self, from: Option<DiffSide>, to: DiffSide) -> Result<Vec<FileChange>, RepoError> {
+        diff::changes(&self.repo.to_thread_local(), from, to)
+    }
+
+    /// How one file differs between `from` and `to`. `path` names the file on the `to` side, and on
+    /// the `from` side too unless `old_path` is given (for renames and copies). A side on which the
+    /// file doesn't exist counts as empty. Fails if a commit side doesn't name a commit.
+    pub fn file_diff(
+        &self,
+        from: Option<DiffSide>,
+        to: DiffSide,
+        path: &str,
+        old_path: Option<&str>,
+    ) -> Result<FileDiff, RepoError> {
+        diff::file_diff(&self.repo.to_thread_local(), from, to, path, old_path)
     }
 }
 
