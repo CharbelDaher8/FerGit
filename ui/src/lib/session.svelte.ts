@@ -19,6 +19,11 @@ class Session {
   info = $state.raw<RepoInfo | null>(null);
   /** The open repository's rows, scroll position and selection. */
   view = $state.raw<RepoView | null>(null);
+  /**
+   * Counts refresh results and change events taken in, including those that leave the generation
+   * unchanged. Views of the index and worktree, which snapshots don't cover, reload when it moves.
+   */
+  updates = $state(0);
   /** True while a refresh is on its way. */
   refreshing = $state(false);
   /** Message of the last error, shown until dismissed. */
@@ -52,6 +57,7 @@ class Session {
   adopt(info: RepoInfo): void {
     if (!this.view || !this.info || info.generation < this.info.generation) return;
     this.info = info;
+    this.updates++;
     this.view.adopt(info);
   }
 
