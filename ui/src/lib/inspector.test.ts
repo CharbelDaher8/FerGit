@@ -76,7 +76,7 @@ const text = (marker: string): FileDiff => ({
 });
 
 function row(id: string, kind: Row["kind"] = "commit"): Row {
-  return { kind, id, graph: { column: 0, color: 0, edges: [] }, summary: id, authorName: "", authorEmail: "", time: 0, refs: [] };
+  return { kind, id, graph: { column: 0, color: 0, edges: [] }, summary: id, authorName: "", authorEmail: "", time: 0, refs: [], relations: [] };
 }
 
 const inspectors: Inspector[] = [];

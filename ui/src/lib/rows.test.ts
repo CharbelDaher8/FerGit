@@ -28,6 +28,7 @@ function makeRow(index: number, generation: number): Row {
     authorEmail: "ada@example.com",
     time: 0,
     refs: [],
+    relations: [],
   };
 }
 

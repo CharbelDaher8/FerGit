@@ -214,7 +214,32 @@ export type RefLabel = {
 	fullName: string,
 	/**  True for the branch HEAD points to, and for the `HEAD` label of a detached HEAD. */
 	isHead: boolean,
+	/**
+	 *  For a local branch with an upstream configured (`branch.<name>.merge`), that upstream and
+	 *  how far the branch has diverged from it. `None` for every other ref.
+	 */
+	upstream: Upstream | null,
 };
+
+/**
+ *  A branch splitting off or joining another, drawn where its line meets this row's commit.
+ * 
+ *  Git doesn't record which branch a commit was made on, so branch names are inferred: from the
+ *  refs at a branch's tip and from merge commit messages (`Merge branch 'feature/x'`), carried down
+ *  the branch's line. A name is `None` when nothing names the branch.
+ */
+export type Relation = 
+/**
+ *  The branch whose line comes down lane `lane` starts at this row's commit: this row's upper
+ *  segment from lane `lane` into the node. `from` names the branch the commit is on.
+ */
+{ kind: "branchedFrom"; lane: number; branch: string | null; from: string | null } | 
+/**
+ *  This merge commit brings in the branch continuing in lane `lane`: this row's lower segment
+ *  from the node to lane `lane`, one per non-first parent. `into` names the branch receiving
+ *  the merge.
+ */
+{ kind: "merges"; lane: number; branch: string | null; into: string | null };
 
 /**
  *  Sent when the open repository changed on disk and a newer snapshot is current. Carries what
@@ -246,6 +271,8 @@ export type Row = {
 	time: number,
 	/**  Labels to show on this row, in display order (HEAD's branch first). */
 	refs: RefLabel[],
+	/**  Branches splitting off or joining at this row, in lane order. Empty for most rows. */
+	relations: Relation[],
 };
 
 export type RowKind = "commit" | 
@@ -277,6 +304,24 @@ export type Signature = {
 	/**  The author's UTC offset in minutes (e.g. +120 for UTC+2). */
 	offsetMinutes: number,
 };
+
+export type Upstream = {
+	/**  Short name of the upstream remote-tracking branch, e.g. `origin/main`. */
+	name: string,
+	state: UpstreamState,
+};
+
+export type UpstreamState = 
+/**
+ *  The upstream ref exists locally. `ahead` counts commits on the branch the upstream lacks;
+ *  `behind` counts commits on the upstream the branch lacks.
+ */
+{ kind: "tracking"; ahead: number; behind: number } | 
+/**
+ *  The upstream is configured but its remote-tracking ref doesn't exist (deleted on the remote
+ *  and pruned, or never fetched).
+ */
+{ kind: "gone" };
 
 /* Tauri Specta runtime */
 type EventEmit<T> = [T] extends [null] ? () => Promise<void> : (payload: T) => Promise<void>;

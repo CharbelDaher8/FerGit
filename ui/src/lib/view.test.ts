@@ -45,6 +45,7 @@ function makeRow(id: string): Row {
     authorEmail: "ada@example.com",
     time: 0,
     refs: [],
+    relations: [],
   };
 }
 
