@@ -39,14 +39,16 @@ impl Session {
 
     /// Re-reads the repository and returns info for the snapshot that is current afterwards. The
     /// generation is unchanged if nothing visible changed.
+    ///
+    /// Only the tips are read at first; the commit walk, the expensive part of a long history, runs
+    /// only when they differ from the current snapshot's.
     pub fn refresh(&self) -> Result<RepoInfo, RepoError> {
         let _refreshing = self.refresh_lock.lock().unwrap_or_else(PoisonError::into_inner);
-        let history = self.repo.read_history()?;
         let current = self.snapshot();
-        if current.shows_same_state_as(&history) {
+        if self.repo.read_tips()? == current.history.tips {
             return Ok(self.info_for(&current));
         }
-        let next = Arc::new(Snapshot::build(history, Generation(current.generation.0 + 1)));
+        let next = Arc::new(Snapshot::build(self.repo.read_history()?, Generation(current.generation.0 + 1)));
         *self.current.write().unwrap_or_else(PoisonError::into_inner) = Arc::clone(&next);
         Ok(self.info_for(&next))
     }
@@ -86,7 +88,7 @@ impl Session {
                 let id = snapshot.id(slot);
                 let commit = summaries.next().flatten().unwrap_or_default();
                 let (kind, refs) = match slot {
-                    Slot::Stash(s) => (RowKind::Stash, vec![stash_label(snapshot.history.stashes[s as usize].index)]),
+                    Slot::Stash(s) => (RowKind::Stash, vec![stash_label(snapshot.history.tips.stashes[s as usize].index)]),
                     _ => (RowKind::Commit, snapshot.labels.get(&id).cloned().unwrap_or_default()),
                 };
                 Row {
@@ -134,7 +136,7 @@ enum Slot {
     WorkingTree,
     /// Index into `history.commits`.
     Commit(u32),
-    /// Index into `history.stashes`.
+    /// Index into `history.tips.stashes`.
     Stash(u32),
 }
 
@@ -146,19 +148,22 @@ struct Snapshot {
     slots: Vec<Slot>,
     /// `graph[i]` is the geometry of `slots[i]`.
     graph: Vec<GraphRow>,
-    /// Ref labels by commit, each list in display order.
+    /// Ref labels by commit, each list in display order. Refs that don't peel to a commit in the
+    /// history have entries too; no row ever looks them up.
     labels: HashMap<Oid, Vec<RefLabel>>,
 }
 
 impl Snapshot {
     fn build(history: History, generation: Generation) -> Snapshot {
+        let tips = &history.tips;
         let mut stashes_by_base: HashMap<Oid, Vec<u32>> = HashMap::new();
-        for (i, stash) in history.stashes.iter().enumerate() {
+        for (i, stash) in tips.stashes.iter().enumerate() {
             stashes_by_base.entry(stash.base).or_default().push(i as u32);
         }
 
-        let mut slots = Vec::with_capacity(history.commits.len() + history.stashes.len() + 1);
-        if history.worktree_dirty {
+        // A stash whose base isn't in the history gets no row: nothing to draw it on.
+        let mut slots = Vec::with_capacity(history.commits.len() + tips.stashes.len() + 1);
+        if tips.worktree_dirty {
             slots.push(Slot::WorkingTree);
         }
         for i in 0..history.commits.len() {
@@ -168,7 +173,7 @@ impl Snapshot {
             slots.push(Slot::Commit(i as u32));
         }
 
-        let head = history.head.id();
+        let head = tips.head.id();
         let mut layout = Layout::new();
         let graph = slots
             .iter()
@@ -176,14 +181,14 @@ impl Snapshot {
                 Slot::WorkingTree => layout.push(Oid::ZERO, head.as_slice()),
                 Slot::Commit(i) => layout.push(history.commits.id(i as usize), history.commits.parents(i as usize)),
                 Slot::Stash(s) => {
-                    let stash = &history.stashes[s as usize];
+                    let stash = &tips.stashes[s as usize];
                     layout.push(stash.id, std::slice::from_ref(&stash.base))
                 }
             })
             .collect();
 
         let mut labels: HashMap<Oid, Vec<RefLabel>> = HashMap::new();
-        for (id, label) in &history.refs {
+        for (id, label) in &tips.refs {
             labels.entry(*id).or_default().push(label.clone());
         }
         for list in labels.values_mut() {
@@ -191,16 +196,6 @@ impl Snapshot {
         }
 
         Snapshot { generation, history, slots, graph, labels }
-    }
-
-    /// Whether `history` would produce the same rows as this snapshot. Commits are immutable and
-    /// reachable only through HEAD, refs and stashes, so comparing those is enough.
-    fn shows_same_state_as(&self, history: &History) -> bool {
-        let old = &self.history;
-        old.head == history.head
-            && old.refs == history.refs
-            && old.stashes == history.stashes
-            && old.worktree_dirty == history.worktree_dirty
     }
 
     fn row_count(&self) -> u32 {
@@ -211,7 +206,7 @@ impl Snapshot {
         match slot {
             Slot::WorkingTree => Oid::ZERO,
             Slot::Commit(i) => self.history.commits.id(i as usize),
-            Slot::Stash(s) => self.history.stashes[s as usize].id,
+            Slot::Stash(s) => self.history.tips.stashes[s as usize].id,
         }
     }
 }

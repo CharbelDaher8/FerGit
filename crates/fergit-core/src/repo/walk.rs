@@ -21,21 +21,10 @@ use gix::hashtable::hash_map::Entry;
 
 use super::{CommitTable, RepoError, git_error, to_oid};
 
-pub(super) struct Walk {
-    pub(super) commits: CommitTable,
-    /// `tip_is_commit[i]` tells whether `tips[i]` names a commit that exists (as opposed to a
-    /// missing object, a tree or a blob).
-    pub(super) tip_is_commit: Vec<bool>,
-}
-
-/// Every commit reachable from `tips`, in display order.
-pub(super) fn walk(repo: &gix::Repository, tips: &[ObjectId]) -> Result<Walk, RepoError> {
-    let graph = collect(repo, tips)?;
-    let tip_is_commit = tips
-        .iter()
-        .map(|tip| graph.index.get(tip).is_some_and(|&i| graph.found[i as usize]))
-        .collect();
-    Ok(Walk { commits: graph.display_order(), tip_is_commit })
+/// Every commit reachable from `tips`, in display order. Tips that aren't commits (missing objects,
+/// trees, blobs) contribute nothing.
+pub(super) fn walk(repo: &gix::Repository, tips: &[ObjectId]) -> Result<CommitTable, RepoError> {
+    Ok(collect(repo, tips)?.display_order())
 }
 
 /// Commits and the edges between them, addressed by dense `u32` indices.

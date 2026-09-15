@@ -80,6 +80,12 @@ impl Repo {
         history::read(&self.repo.to_thread_local())
     }
 
+    /// Reads the [`Tips`] alone: everything [`Repo::read_history`] reads except the commit walk, so
+    /// it stays cheap however long the history is.
+    pub fn read_tips(&self) -> Result<Tips, RepoError> {
+        history::read_tips(&self.repo.to_thread_local())
+    }
+
     /// Summary line and author of each commit in `ids`, in the same order. Ids that don't name a
     /// commit yield `None`.
     pub fn commit_summaries(&self, ids: &[Oid]) -> Result<Vec<Option<CommitSummary>>, RepoError> {
@@ -96,16 +102,25 @@ impl Repo {
 /// The state of a repository relevant to drawing its graph.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct History {
+    pub tips: Tips,
+    /// Commits reachable from HEAD, every ref and every stash base in `tips`, in display order.
+    pub commits: CommitTable,
+}
+
+/// Where a repository's history starts, plus whether its worktree is dirty.
+///
+/// Commits are immutable and reachable only from these starting points, so two equal `Tips` read at
+/// different times describe the same history.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Tips {
     pub head: Head,
-    /// Refs whose target peels to a commit, one entry per ref; several refs may share a commit.
-    /// Includes local branches, remote-tracking branches (without symbolic ones like `origin/HEAD`),
-    /// tags, and a [`crate::RefKind::Head`] label when HEAD is detached. The local branch HEAD
-    /// points to has `is_head` set.
+    /// Local branches, remote-tracking branches (without symbolic ones like `origin/HEAD`) and
+    /// tags, one entry per ref and each peeled, plus a [`crate::RefKind::Head`] label when HEAD is
+    /// detached; sorted. The local branch HEAD points to has `is_head` set. A ref can peel to
+    /// something other than a commit (`git tag t HEAD^{tree}`); its id then matches no commit.
     pub refs: Vec<(Oid, RefLabel)>,
     /// Stash entries, newest (`stash@{0}`) first.
     pub stashes: Vec<StashEntry>,
-    /// Commits reachable from HEAD, every ref in `refs`, and every stash base, in display order.
-    pub commits: CommitTable,
     /// Whether the worktree or index differs from HEAD, untracked files included. Always false for
     /// bare repositories.
     pub worktree_dirty: bool,

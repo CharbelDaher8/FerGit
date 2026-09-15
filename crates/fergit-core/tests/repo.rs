@@ -112,11 +112,11 @@ fn empty_repository_has_an_unborn_head_and_no_commits() {
 
     let history = read(&repo);
 
-    assert_eq!(history.head, Head::Unborn { branch: "main".to_owned() });
-    assert!(history.refs.is_empty());
-    assert!(history.stashes.is_empty());
+    assert_eq!(history.tips.head, Head::Unborn { branch: "main".to_owned() });
+    assert!(history.tips.refs.is_empty());
+    assert!(history.tips.stashes.is_empty());
     assert!(history.commits.is_empty());
-    assert!(!history.worktree_dirty);
+    assert!(!history.tips.worktree_dirty);
 }
 
 #[test]
@@ -129,10 +129,10 @@ fn linear_history_lists_newest_first() {
 
     let history = read(&repo);
 
-    assert_eq!(history.head, Head::Branch { name: "main".to_owned(), id: third });
-    assert_eq!(history.refs, [(third, branch("main", true))]);
+    assert_eq!(history.tips.head, Head::Branch { name: "main".to_owned(), id: third });
+    assert_eq!(history.tips.refs, [(third, branch("main", true))]);
     assert_eq!(rows(&history), [(third, vec![second]), (second, vec![first]), (first, vec![])]);
-    assert!(!history.worktree_dirty);
+    assert!(!history.tips.worktree_dirty);
 }
 
 #[test]
@@ -153,11 +153,11 @@ fn branch_and_merge_are_ordered_topologically_then_by_date() {
             (h.base, vec![]),
         ]
     );
-    assert_eq!(history.refs, [(h.feature_2, branch("feature", false)), (h.merge, branch("main", true))]);
+    assert_eq!(history.tips.refs, [(h.feature_2, branch("feature", false)), (h.merge, branch("main", true))]);
 }
 
 #[test]
-fn tags_peel_to_commits_and_non_commit_tags_are_skipped() {
+fn tags_peel_and_non_commit_tags_match_no_commit() {
     let fx = Fixture::new();
     let repo = fx.init("tags");
     let first = commit(&repo, "a.txt", "1\n", "first", T0);
@@ -167,14 +167,21 @@ fn tags_peel_to_commits_and_non_commit_tags_are_skipped() {
     git(&repo, &["tag", "--annotate", "-m", "A tag of a tag", "nested", "v1.0"]);
     git(&repo, &["tag", "tree-tag", "HEAD^{tree}"]);
     assert_ne!(rev_parse(&repo, "refs/tags/v1.0"), second, "v1.0 is an annotated tag object");
+    let tree = rev_parse(&repo, "HEAD^{tree}");
 
     let history = read(&repo);
 
     assert_eq!(
-        history.refs,
-        [(second, branch("main", true)), (first, tag("light")), (second, tag("nested")), (second, tag("v1.0"))]
+        history.tips.refs,
+        [
+            (second, branch("main", true)),
+            (first, tag("light")),
+            (second, tag("nested")),
+            (tree, tag("tree-tag")),
+            (second, tag("v1.0")),
+        ]
     );
-    assert_eq!(commits(&history), [second, first]);
+    assert_eq!(commits(&history), [second, first], "the tree tag adds no commit");
 }
 
 #[test]
@@ -187,9 +194,9 @@ fn detached_head_gets_a_head_label() {
 
     let history = read(&repo);
 
-    assert_eq!(history.head, Head::Detached { id: first });
+    assert_eq!(history.tips.head, Head::Detached { id: first });
     assert_eq!(
-        history.refs,
+        history.tips.refs,
         [(first, label(RefKind::Head, "HEAD", "HEAD", true)), (second, branch("main", false))]
     );
     assert_eq!(commits(&history), [second, first]);
@@ -212,7 +219,7 @@ fn remote_tracking_branches_are_listed_without_origin_head() {
 
     let remote = |name: &str| label(RefKind::RemoteBranch, name, &format!("refs/remotes/{name}"), false);
     assert_eq!(
-        history.refs,
+        history.tips.refs,
         [(second, branch("main", true)), (second, remote("origin/main")), (first, remote("origin/topic"))]
     );
     assert_eq!(commits(&history), [second, first]);
@@ -232,17 +239,17 @@ fn stashes_are_listed_newest_first_with_their_base() {
 
     let history = read(&repo);
 
-    assert_eq!(history.stashes.len(), 2);
-    for (index, stash) in history.stashes.iter().enumerate() {
+    assert_eq!(history.tips.stashes.len(), 2);
+    for (index, stash) in history.tips.stashes.iter().enumerate() {
         assert_eq!(stash.index, index as u32);
         assert_eq!(stash.id, rev_parse(&repo, &format!("stash@{{{index}}}")));
         assert_eq!(stash.base, base);
         assert_eq!(stash.message, messages[index]);
     }
-    assert!(history.stashes[0].message.ends_with("second"));
+    assert!(history.tips.stashes[0].message.ends_with("second"));
     // Stash commits aren't refs, so only the base is in the graph.
     assert_eq!(commits(&history), [base]);
-    assert!(!history.worktree_dirty);
+    assert!(!history.tips.worktree_dirty);
 }
 
 #[test]
@@ -250,7 +257,7 @@ fn worktree_dirty_tracks_modified_staged_and_untracked_files() {
     let fx = Fixture::new();
     let repo = fx.init("dirty");
     commit(&repo, "a.txt", "committed\n", "initial", T0);
-    let dirty = |repo: &Path| read(repo).worktree_dirty;
+    let dirty = |repo: &Path| read(repo).tips.worktree_dirty;
     assert!(!dirty(&repo), "clean after committing");
 
     write(&repo, "a.txt", "modified in the worktree\n");
@@ -282,9 +289,9 @@ fn bare_repository_root_is_the_git_dir_and_never_dirty() {
 
     let canonical = |path: &Path| std::fs::canonicalize(path).unwrap();
     assert_eq!(canonical(opened.root()), canonical(&origin));
-    assert_eq!(history.head, Head::Branch { name: "main".to_owned(), id: only });
+    assert_eq!(history.tips.head, Head::Branch { name: "main".to_owned(), id: only });
     assert_eq!(commits(&history), [only]);
-    assert!(!history.worktree_dirty);
+    assert!(!history.tips.worktree_dirty);
 }
 
 #[test]
@@ -533,5 +540,5 @@ fn reads_do_not_run_programs_named_by_the_repository() {
         assert!(!marker(name).exists(), "{name}: a configured program was run");
     }
     // Also catches a clean filter that ran without leaving a marker: its output differs from a.txt.
-    assert!(!history.worktree_dirty, "a.txt's content matches the index");
+    assert!(!history.tips.worktree_dirty, "a.txt's content matches the index");
 }

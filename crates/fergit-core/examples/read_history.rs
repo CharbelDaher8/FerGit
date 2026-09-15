@@ -31,9 +31,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "run {run}: read_history {:.1} ms, {} commits, {} refs, {} stashes, worktree dirty: {}",
             elapsed.as_secs_f64() * 1e3,
             history.commits.len(),
-            history.refs.len(),
-            history.stashes.len(),
-            history.worktree_dirty,
+            history.tips.refs.len(),
+            history.tips.stashes.len(),
+            history.tips.worktree_dirty,
         );
     }
     Ok(())

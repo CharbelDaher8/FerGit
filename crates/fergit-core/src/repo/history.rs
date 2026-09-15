@@ -2,10 +2,26 @@
 
 use gix::refs::{Category, TargetRef};
 
-use super::{Head, History, RepoError, StashEntry, git_error, lossy, status, to_object_id, to_oid, walk};
+use super::{Head, History, RepoError, StashEntry, Tips, git_error, lossy, status, to_object_id, to_oid, walk};
 use crate::types::{Oid, RefKind, RefLabel};
 
 pub(super) fn read(repo: &gix::Repository) -> Result<History, RepoError> {
+    let tips = read_tips(repo)?;
+    // A ref that peels to a tree or blob, or a stash whose base is gone, is a starting point the
+    // walk skips; it simply matches no commit in the result.
+    let starts: Vec<gix::ObjectId> = tips
+        .head
+        .id()
+        .into_iter()
+        .chain(tips.refs.iter().map(|(id, _)| *id))
+        .chain(tips.stashes.iter().map(|stash| stash.base))
+        .map(to_object_id)
+        .collect();
+    let commits = walk::walk(repo, &starts)?;
+    Ok(History { tips, commits })
+}
+
+pub(super) fn read_tips(repo: &gix::Repository) -> Result<Tips, RepoError> {
     let (head, head_branch) = read_head(repo)?;
     let mut refs = read_refs(repo, head_branch.as_deref())?;
     if let Head::Detached { id } = head {
@@ -18,31 +34,10 @@ pub(super) fn read(repo: &gix::Repository) -> Result<History, RepoError> {
         refs.push((id, label));
     }
     refs.sort_by(|(a_id, a), (b_id, b)| (a.kind, &a.full_name, a_id).cmp(&(b.kind, &b.full_name, b_id)));
-    let mut stashes = read_stashes(repo)?;
-
-    let tips: Vec<gix::ObjectId> = head
-        .id()
-        .into_iter()
-        .chain(refs.iter().map(|(id, _)| *id))
-        .chain(stashes.iter().map(|stash| stash.base))
-        .map(to_object_id)
-        .collect();
-    let walk = walk::walk(repo, &tips)?;
-
-    // Drop refs that peel to a tree or blob (`git tag t HEAD^{tree}`) and stashes whose base
-    // commit is gone: there's no commit in the graph to attach them to.
-    let flags = &walk.tip_is_commit[usize::from(head.id().is_some())..];
-    let (ref_flags, stash_flags) = flags.split_at(refs.len());
-    let mut ref_flags = ref_flags.iter();
-    refs.retain(|_| *ref_flags.next().expect("one flag per ref"));
-    let mut stash_flags = stash_flags.iter();
-    stashes.retain(|_| *stash_flags.next().expect("one flag per stash"));
-
-    Ok(History {
+    Ok(Tips {
         head,
         refs,
-        stashes,
-        commits: walk.commits,
+        stashes: read_stashes(repo)?,
         worktree_dirty: status::is_dirty(repo)?,
     })
 }
