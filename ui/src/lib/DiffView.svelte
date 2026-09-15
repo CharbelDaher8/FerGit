@@ -84,7 +84,13 @@
       <span class="mono">{result.new === null ? "none" : shortId(result.new)}</span>
     </p>
   {:else if model === null}
-    <p class="state">The contents are identical; only metadata such as the file mode changed.</p>
+    <p class="state">
+      {#if request.oldPath !== null && request.oldPath !== request.path}
+        The file was renamed or copied without changing its contents.
+      {:else}
+        The contents are identical; only metadata such as the file mode changed.
+      {/if}
+    </p>
   {:else}
     <!-- A scrollable region must be focusable for keyboard users. -->
     <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
