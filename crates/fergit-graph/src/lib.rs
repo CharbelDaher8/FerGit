@@ -84,6 +84,19 @@ impl<Id: Copy + Eq> Layout<Id> {
     /// pushed before any of its parents. A parent that is never pushed (for example one outside a
     /// shallow clone) keeps its lane running to the bottom of the rows laid out so far.
     pub fn push(&mut self, id: Id, parents: &[Id]) -> GraphRow {
+        self.place(id, parents, None)
+    }
+
+    /// Like [`Layout::push`], and also reports which lane each parent's line continues in: after
+    /// the call, `parent_lanes[i]` is the lane of `parents[i]` (a repeated parent repeats its lane).
+    /// The row's lower segments show the same lanes, but sorted, so they can't tell which parent is
+    /// which. `parent_lanes` is cleared first.
+    pub fn push_with_parent_lanes(&mut self, id: Id, parents: &[Id], parent_lanes: &mut Vec<u16>) -> GraphRow {
+        parent_lanes.clear();
+        self.place(id, parents, Some(parent_lanes))
+    }
+
+    fn place(&mut self, id: Id, parents: &[Id], mut parent_lanes: Option<&mut Vec<u16>>) -> GraphRow {
         // Lanes waiting for this node converge into it; the leftmost one holds the node and lends
         // it its color. A node nobody waits for (a branch tip) starts a new lane.
         let converging = self.lanes.iter().position(|lane| lane.is_some_and(|l| l.expects == id));
@@ -122,7 +135,11 @@ impl<Id: Copy + Eq> Layout<Id> {
 
         let node_lowers_start = edges.len();
         for (i, &parent) in parents.iter().enumerate() {
-            if parents[..i].contains(&parent) {
+            if let Some(earlier) = parents[..i].iter().position(|&p| p == parent) {
+                if let Some(lanes) = parent_lanes.as_mut() {
+                    let lane = lanes[earlier];
+                    lanes.push(lane);
+                }
                 continue;
             }
             let (to, color) = if i == 0 {
@@ -143,6 +160,9 @@ impl<Id: Copy + Eq> Layout<Id> {
                 self.lanes[k] = Some(Lane { expects: parent, color });
                 (k, color)
             };
+            if let Some(lanes) = parent_lanes.as_mut() {
+                lanes.push(lane_index(to));
+            }
             edges.push(Edge { half: Half::Lower, from: column_u16, to: lane_index(to), color });
         }
         edges[node_lowers_start..].sort_unstable_by_key(|e| e.to);
@@ -211,6 +231,33 @@ mod tests {
         assert!(layout.lanes[0].is_none());
         layout.push(2, &[]);
         assert!(layout.lanes.is_empty());
+    }
+
+    #[test]
+    fn parent_lanes_follow_parent_order_and_match_the_lower_segments() {
+        let mut layout = Layout::new();
+        let mut lanes = vec![7];
+        layout.push_with_parent_lanes(10, &[3], &mut lanes); // lane 0 waits for 3
+        assert_eq!(lanes, [0]);
+        // First parent in the node's lane; 3 joins lane 0, which waits for it; 1 and 2 get new
+        // lanes; the repeated 2 repeats its lane.
+        let row = layout.push_with_parent_lanes(11, &[4, 3, 2, 1, 2], &mut lanes);
+        assert_eq!(row.column, 1);
+        assert_eq!(lanes, [1, 0, 2, 3, 2]);
+        let mut lower: Vec<u16> =
+            row.edges.iter().filter(|e| e.half == Half::Lower && e.from == row.column).map(|e| e.to).collect();
+        lower.sort_unstable();
+        let mut distinct = lanes.clone();
+        distinct.sort_unstable();
+        distinct.dedup();
+        assert_eq!(lower, distinct);
+        // From the same state, both entry points lay out the same row.
+        let mut twin = layout.clone();
+        assert_eq!(
+            layout.push(12, &[4, 3]),
+            twin.push_with_parent_lanes(12, &[4, 3], &mut lanes),
+            "push and push_with_parent_lanes agree"
+        );
     }
 
     #[test]
