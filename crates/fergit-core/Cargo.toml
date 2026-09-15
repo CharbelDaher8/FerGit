@@ -1,0 +1,22 @@
+[package]
+name = "fergit-core"
+description = "FerGit core: git access (repo), repository sessions (session). No Tauri dependency."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[features]
+specta = ["dep:specta", "dep:specta-typescript", "fergit-graph/specta"]
+
+[dependencies]
+fergit-graph.workspace = true
+gix.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+specta = { workspace = true, optional = true, features = ["derive"] }
+# Only for the `Number` type override, so 64-bit timestamps export as a plain TS `number`.
+specta-typescript = { workspace = true, optional = true }
+
+[dev-dependencies]
+serde_json.workspace = true
+tempfile.workspace = true
