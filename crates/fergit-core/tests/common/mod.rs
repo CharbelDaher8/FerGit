@@ -1,5 +1,8 @@
 //! Throwaway repositories built with the git CLI, isolated from the user's git configuration.
 
+// Each test binary uses a different subset of these helpers.
+#![allow(dead_code)]
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;

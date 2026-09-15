@@ -6,12 +6,22 @@
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
 use fergit_graph::{GraphRow, Layout};
 
 use crate::repo::{History, Repo, RepoError};
 use crate::types::{CommitDetails, Generation, Oid, RefKind, RefLabel, RepoInfo, Row, RowKind, RowsPage};
+
+/// The generation of the next snapshot any session in this process builds. Sharing it across
+/// sessions means a generation from a previously open repository (in a late response or event) is
+/// always older than every generation of the current one, so it can be recognized as stale.
+static NEXT_GENERATION: AtomicU32 = AtomicU32::new(1);
+
+fn next_generation() -> Generation {
+    Generation(NEXT_GENERATION.fetch_add(1, Ordering::Relaxed))
+}
 
 /// An open repository. All methods are safe to call concurrently.
 pub struct Session {
@@ -25,7 +35,7 @@ impl Session {
     /// Opens the repository containing `path` and reads its first snapshot.
     pub fn open(path: &Path) -> Result<Session, RepoError> {
         let repo = Repo::open(path)?;
-        let snapshot = Snapshot::build(repo.read_history()?, Generation(1));
+        let snapshot = Snapshot::build(repo.read_history()?, next_generation());
         Ok(Session {
             repo,
             current: RwLock::new(Arc::new(snapshot)),
@@ -48,7 +58,7 @@ impl Session {
         if self.repo.read_tips()? == current.history.tips {
             return Ok(self.info_for(&current));
         }
-        let next = Arc::new(Snapshot::build(self.repo.read_history()?, Generation(current.generation.0 + 1)));
+        let next = Arc::new(Snapshot::build(self.repo.read_history()?, next_generation()));
         *self.current.write().unwrap_or_else(PoisonError::into_inner) = Arc::clone(&next);
         Ok(self.info_for(&next))
     }

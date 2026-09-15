@@ -85,8 +85,9 @@ impl<'de> Deserialize<'de> for Oid {
     }
 }
 
-/// Identifies one snapshot of a repository. Increases every time the visible state changes, so the
-/// UI can discard responses that belong to an older snapshot.
+/// Identifies one snapshot of a repository. Increases every time the visible state changes, and
+/// keeps increasing across repositories opened in the same process, so the UI can discard any
+/// response or event from an older snapshot, including one of a previously open repository.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(transparent)]
