@@ -27,7 +27,7 @@ fn rows(history: &History) -> Vec<(Oid, Vec<Oid>)> {
 }
 
 fn label(kind: RefKind, name: &str, full_name: &str, is_head: bool) -> RefLabel {
-    RefLabel { kind, name: name.to_owned(), full_name: full_name.to_owned(), is_head }
+    RefLabel { kind, name: name.to_owned(), full_name: full_name.to_owned(), is_head, upstream: None }
 }
 
 fn branch(name: &str, is_head: bool) -> RefLabel {

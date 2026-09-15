@@ -6,11 +6,40 @@ use std::sync::Arc;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use common::{Fixture, T0, commit, git_at, rev_parse, write};
-use fergit_core::Oid;
+use common::{Fixture, T0, commit, git, git_at, rev_parse, write};
 use fergit_core::session::Session;
+use fergit_core::{Oid, RefKind, Relation, Row, Upstream, UpstreamState};
 
 const MINUTE: i64 = 60;
+
+fn all_rows(session: &Session) -> Vec<Row> {
+    session.rows(0, session.info().row_count).unwrap().rows
+}
+
+/// The upstream shown on the label of local branch `branch`.
+fn upstream_of(session: &Session, branch: &str) -> Option<Upstream> {
+    all_rows(session)
+        .into_iter()
+        .flat_map(|row| row.refs)
+        .find(|label| label.kind == RefKind::LocalBranch && label.name == branch)
+        .unwrap_or_else(|| panic!("no local branch {branch}"))
+        .upstream
+}
+
+fn tracking(name: &str, ahead: u32, behind: u32) -> Option<Upstream> {
+    Some(Upstream { name: name.to_owned(), state: UpstreamState::Tracking { ahead, behind } })
+}
+
+/// A bare `origin.git` with one commit on `main`, a `work` repository that pushes to it, and a
+/// `clone` of it whose `main` follows `origin/main`. Returns `(origin, work, clone)`.
+fn cloned(fx: &Fixture) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
+    let origin = fx.init_bare("origin.git");
+    let work = fx.init("work");
+    commit(&work, "a.txt", "1\n", "base", T0);
+    git(&work, &["push", "--quiet", origin.to_str().unwrap(), "main"]);
+    git(fx.path("").as_path(), &["clone", "--quiet", origin.to_str().unwrap(), "clone"]);
+    (origin, work, fx.path("clone"))
+}
 
 #[test]
 fn refresh_keeps_the_generation_until_something_changes() {
@@ -91,4 +120,88 @@ fn watch_reports_a_commit_made_by_another_program() {
     };
     assert_eq!(session.locate(second).row, Some(0));
     assert_eq!(session.info(), info);
+}
+
+#[test]
+fn upstream_state_matches_git() {
+    let fx = Fixture::new();
+    let (origin, work, clone) = cloned(&fx);
+    // Two commits on the branch that the upstream lacks, and one on the upstream the branch lacks.
+    commit(&clone, "b.txt", "1\n", "local 1", T0 + MINUTE);
+    commit(&clone, "b.txt", "2\n", "local 2", T0 + 2 * MINUTE);
+    commit(&work, "c.txt", "1\n", "remote 1", T0 + 3 * MINUTE);
+    git(&work, &["push", "--quiet", origin.to_str().unwrap(), "main"]);
+    git(&clone, &["fetch", "--quiet"]);
+    // A branch following a local branch, one whose upstream is gone, and one without an upstream.
+    git(&clone, &["branch", "--quiet", "--track", "follower", "main"]);
+    git(&clone, &["branch", "--quiet", "stale"]);
+    git(&clone, &["config", "branch.stale.remote", "origin"]);
+    git(&clone, &["config", "branch.stale.merge", "refs/heads/deleted"]);
+    git(&clone, &["branch", "--quiet", "loner"]);
+
+    let counts = git(&clone, &["rev-list", "--left-right", "--count", "main...origin/main"]);
+    let (ahead, behind) = counts.trim().split_once('\t').expect("git prints two counts");
+    assert_eq!((ahead, behind), ("2", "1"), "the fixture diverged as intended");
+
+    let session = Session::open(&clone).unwrap();
+
+    assert_eq!(upstream_of(&session, "main"), tracking("origin/main", 2, 1));
+    assert_eq!(upstream_of(&session, "follower"), tracking("main", 0, 0));
+    assert_eq!(
+        upstream_of(&session, "stale"),
+        Some(Upstream { name: "origin/deleted".to_owned(), state: UpstreamState::Gone })
+    );
+    assert_eq!(upstream_of(&session, "loner"), None);
+}
+
+#[test]
+fn refresh_notices_an_upstream_being_set() {
+    let fx = Fixture::new();
+    let (_origin, _work, clone) = cloned(&fx);
+    git(&clone, &["branch", "--quiet", "topic"]);
+    let session = Session::open(&clone).unwrap();
+    let opened = session.info().generation;
+    assert_eq!(upstream_of(&session, "topic"), None);
+
+    // Only `.git/config` changes; no ref moves.
+    git(&clone, &["branch", "--quiet", "--set-upstream-to", "origin/main", "topic"]);
+
+    assert!(session.refresh().unwrap().generation > opened, "an upstream change is visible state");
+    assert_eq!(upstream_of(&session, "topic"), tracking("origin/main", 0, 0));
+}
+
+#[test]
+fn relations_name_a_merged_and_deleted_branch() {
+    let fx = Fixture::new();
+    let repo = fx.init("relations");
+    commit(&repo, "a.txt", "1\n", "base", T0);
+    git(&repo, &["checkout", "--quiet", "-b", "feature"]);
+    commit(&repo, "f.txt", "1\n", "feature work", T0 + MINUTE);
+    git(&repo, &["checkout", "--quiet", "main"]);
+    commit(&repo, "a.txt", "2\n", "main work", T0 + 2 * MINUTE);
+    git_at(&repo, &["merge", "--quiet", "--no-ff", "--no-edit", "feature"], T0 + 3 * MINUTE);
+    git(&repo, &["branch", "--quiet", "-D", "feature"]);
+
+    let rows = all_rows(&Session::open(&repo).unwrap());
+    let row = |summary: &str| {
+        rows.iter()
+            .find(|row| row.summary == summary)
+            .unwrap_or_else(|| panic!("no row {summary:?}"))
+    };
+
+    // The branch is gone, so only the merge message names it.
+    let merge = row("Merge branch 'feature'");
+    assert!(
+        matches!(merge.relations.as_slice(), [Relation::Merges { branch: Some(b), into: Some(i), .. }] if b == "feature" && i == "main"),
+        "{:?}",
+        merge.relations
+    );
+    let base = row("base");
+    assert!(
+        matches!(base.relations.as_slice(), [Relation::BranchedFrom { branch: Some(b), from: Some(f), .. }] if b == "feature" && f == "main"),
+        "{:?}",
+        base.relations
+    );
+    assert!(row("main work").relations.is_empty());
+    assert!(row("feature work").relations.is_empty());
 }

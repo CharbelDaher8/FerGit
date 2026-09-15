@@ -4,6 +4,8 @@
 //! patches its own copy of repository state. [`Session::refresh`] re-reads git and swaps in a new
 //! snapshot, with a new generation, only if something visible changed.
 
+mod relations;
+
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -11,11 +13,13 @@ use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
 use fergit_graph::{GraphRow, Layout};
 
-use crate::repo::{History, Repo, RepoError, RepoWatcher};
+use crate::id_map::IdMap;
+use crate::repo::{CommitTable, History, MergeNames, Repo, RepoError, RepoWatcher};
 use crate::types::{
     CommitDetails, DiffSide, FileChange, FileDiff, Generation, Oid, RefKind, RefLabel, RepoInfo, Row, RowKind,
-    RowLocation, RowsPage,
+    RowLocation, RowsPage, Upstream, UpstreamState,
 };
+use relations::{Relations, RelationsBuilder, RowInput, branch_name};
 
 /// The generation of the next snapshot any session in this process builds. Sharing it across
 /// sessions means a generation from a previously open repository (in a late response or event) is
@@ -32,17 +36,24 @@ pub struct Session {
     current: RwLock<Arc<Snapshot>>,
     /// Serializes refreshes so two of them can't install snapshots out of order.
     refresh_lock: Mutex<()>,
+    /// What each merge commit's message names, by commit. Messages never change, so entries stay
+    /// valid across snapshots and a refresh reads only the merges it hasn't seen before.
+    merge_names: Mutex<IdMap<Option<MergeNames>>>,
 }
 
 impl Session {
     /// Opens the repository containing `path` and reads its first snapshot.
     pub fn open(path: &Path) -> Result<Session, RepoError> {
         let repo = Repo::open(path)?;
-        let snapshot = Snapshot::build(repo.read_history()?, next_generation());
+        let history = repo.read_history()?;
+        let mut merge_names = IdMap::default();
+        read_merge_names(&repo, &history.commits, &mut merge_names)?;
+        let snapshot = Snapshot::build(history, next_generation(), &merge_names);
         Ok(Session {
             repo,
             current: RwLock::new(Arc::new(snapshot)),
             refresh_lock: Mutex::new(()),
+            merge_names: Mutex::new(merge_names),
         })
     }
 
@@ -61,7 +72,10 @@ impl Session {
         if self.repo.read_tips()? == current.history.tips {
             return Ok(self.info_for(&current));
         }
-        let next = Arc::new(Snapshot::build(self.repo.read_history()?, next_generation()));
+        let history = self.repo.read_history()?;
+        let mut merge_names = self.merge_names.lock().unwrap_or_else(PoisonError::into_inner);
+        read_merge_names(&self.repo, &history.commits, &mut merge_names)?;
+        let next = Arc::new(Snapshot::build(history, next_generation(), &merge_names));
         *self.current.write().unwrap_or_else(PoisonError::into_inner) = Arc::clone(&next);
         Ok(self.info_for(&next))
     }
@@ -106,7 +120,8 @@ impl Session {
         let rows = slots
             .iter()
             .zip(&snapshot.graph[range])
-            .map(|(&slot, graph)| {
+            .zip(start..)
+            .map(|((&slot, graph), row)| {
                 if slot == Slot::WorkingTree {
                     return Row {
                         kind: RowKind::WorkingTree,
@@ -117,6 +132,7 @@ impl Session {
                         author_email: String::new(),
                         time: 0,
                         refs: Vec::new(),
+                        relations: Vec::new(),
                     };
                 }
                 let id = snapshot.id(slot);
@@ -134,6 +150,7 @@ impl Session {
                     author_email: commit.author_email,
                     time: commit.author_time,
                     refs,
+                    relations: snapshot.relations.row(row),
                 }
             })
             .collect();
@@ -194,6 +211,20 @@ impl Session {
     }
 }
 
+/// Adds to `cache` what the message of each merge commit in `commits` names, for the merges it
+/// doesn't hold yet. Only merges are read: their messages are what names branches that were merged
+/// and deleted.
+fn read_merge_names(repo: &Repo, commits: &CommitTable, cache: &mut IdMap<Option<MergeNames>>) -> Result<(), RepoError> {
+    let unread: Vec<Oid> = (0..commits.len())
+        .filter(|&i| commits.parents(i).len() > 1)
+        .map(|i| commits.id(i))
+        .filter(|id| !cache.contains_key(id))
+        .collect();
+    let names = repo.merge_names(&unread)?;
+    cache.extend(unread.into_iter().zip(names));
+    Ok(())
+}
+
 /// What one graph row shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Slot {
@@ -212,14 +243,19 @@ struct Snapshot {
     slots: Vec<Slot>,
     /// `graph[i]` is the geometry of `slots[i]`.
     graph: Vec<GraphRow>,
-    /// Ref labels by commit, each list in display order. Refs that don't peel to a commit in the
-    /// history have entries too; no row ever looks them up.
+    /// Ref labels by commit, each list in display order, local branches with their upstream state.
+    /// Refs that don't peel to a commit in the history have entries too; no row ever looks them up.
     labels: HashMap<Oid, Vec<RefLabel>>,
+    /// Where branches split off and join, by row.
+    relations: Relations,
 }
 
 impl Snapshot {
-    fn build(history: History, generation: Generation) -> Snapshot {
+    fn build(mut history: History, generation: Generation, merge_names: &IdMap<Option<MergeNames>>) -> Snapshot {
+        history.commits.index_parents();
+        let labels = labels(&history);
         let tips = &history.tips;
+
         let mut stashes_by_base: HashMap<Oid, Vec<u32>> = HashMap::new();
         for (i, stash) in tips.stashes.iter().enumerate() {
             stashes_by_base.entry(stash.base).or_default().push(i as u32);
@@ -239,27 +275,32 @@ impl Snapshot {
 
         let head = tips.head.id();
         let mut layout = Layout::new();
-        let graph = slots
-            .iter()
-            .map(|&slot| match slot {
-                Slot::WorkingTree => layout.push(Oid::ZERO, head.as_slice()),
-                Slot::Commit(i) => layout.push(history.commits.id(i as usize), history.commits.parents(i as usize)),
+        let mut relations = RelationsBuilder::default();
+        let mut parent_lanes = Vec::new();
+        let mut graph = Vec::with_capacity(slots.len());
+        for &slot in &slots {
+            let (kind, id, parents): (RowKind, Oid, &[Oid]) = match slot {
+                Slot::WorkingTree => (RowKind::WorkingTree, Oid::ZERO, head.as_slice()),
+                Slot::Commit(i) => (RowKind::Commit, history.commits.id(i as usize), history.commits.parents(i as usize)),
                 Slot::Stash(s) => {
                     let stash = &tips.stashes[s as usize];
-                    layout.push(stash.id, std::slice::from_ref(&stash.base))
+                    (RowKind::Stash, stash.id, std::slice::from_ref(&stash.base))
                 }
-            })
-            .collect();
-
-        let mut labels: HashMap<Oid, Vec<RefLabel>> = HashMap::new();
-        for (id, label) in &tips.refs {
-            labels.entry(*id).or_default().push(label.clone());
+            };
+            let row = layout.push_with_parent_lanes(id, parents, &mut parent_lanes);
+            // Only commits name branches; a stash's id could coincide with nothing a label names anyway.
+            let is_commit = kind == RowKind::Commit;
+            relations.push(RowInput {
+                kind,
+                graph: &row,
+                parent_lanes: &parent_lanes,
+                branch: labels.get(&id).filter(|_| is_commit).and_then(|labels| branch_name(labels)),
+                merge: merge_names.get(&id).filter(|_| is_commit).and_then(Option::as_ref),
+            });
+            graph.push(row);
         }
-        for list in labels.values_mut() {
-            list.sort_by(|a, b| (!a.is_head, a.kind, &a.name).cmp(&(!b.is_head, b.kind, &b.name)));
-        }
 
-        Snapshot { generation, history, slots, graph, labels }
+        Snapshot { generation, relations: relations.finish(), history, slots, graph, labels }
     }
 
     fn row_count(&self) -> u32 {
@@ -275,11 +316,72 @@ impl Snapshot {
     }
 }
 
+/// Ref labels by commit, each list in display order (HEAD's branch first), with every local
+/// branch's upstream state filled in.
+fn labels(history: &History) -> HashMap<Oid, Vec<RefLabel>> {
+    let upstreams = upstream_states(history);
+    let mut labels: HashMap<Oid, Vec<RefLabel>> = HashMap::new();
+    for (id, label) in &history.tips.refs {
+        let mut label = label.clone();
+        if label.kind == RefKind::LocalBranch {
+            label.upstream = upstreams.get(label.full_name.as_str()).cloned();
+        }
+        labels.entry(*id).or_default().push(label);
+    }
+    for list in labels.values_mut() {
+        list.sort_by(|a, b| (!a.is_head, a.kind, &a.name).cmp(&(!b.is_head, b.kind, &b.name)));
+    }
+    labels
+}
+
+/// The upstream state of each local branch that has an upstream configured, by the branch's full
+/// name. A branch whose own commit isn't in the history (it names a tree, say) is left out, and so
+/// is one whose upstream names something other than a commit.
+fn upstream_states(history: &History) -> HashMap<&str, Upstream> {
+    let tips = &history.tips;
+    let branch_id = |full_name: &str| tips.refs.iter().find(|(_, label)| label.full_name == full_name).map(|(id, _)| *id);
+
+    let ids: Vec<Oid> = tips
+        .upstreams
+        .iter()
+        .flat_map(|upstream| branch_id(&upstream.branch).into_iter().chain(upstream.id))
+        .collect();
+    let rows: HashMap<Oid, usize> = ids
+        .iter()
+        .zip(history.commits.rows_of(&ids))
+        .filter_map(|(&id, row)| Some((id, row?)))
+        .collect();
+    let row = |id: Option<Oid>| id.and_then(|id| rows.get(&id).copied());
+
+    let mut states = HashMap::new();
+    let mut tracked = Vec::new();
+    let mut pairs = Vec::new();
+    for upstream in &tips.upstreams {
+        let Some(branch_row) = row(branch_id(&upstream.branch)) else {
+            continue;
+        };
+        if upstream.id.is_none() {
+            states.insert(upstream.branch.as_str(), Upstream { name: upstream.name.clone(), state: UpstreamState::Gone });
+        } else if let Some(upstream_row) = row(upstream.id) {
+            tracked.push(upstream);
+            pairs.push((branch_row, upstream_row));
+        }
+    }
+    if !pairs.is_empty() {
+        for (upstream, (ahead, behind)) in tracked.into_iter().zip(history.commits.ahead_behind(&pairs)) {
+            let state = UpstreamState::Tracking { ahead, behind };
+            states.insert(upstream.branch.as_str(), Upstream { name: upstream.name.clone(), state });
+        }
+    }
+    states
+}
+
 fn stash_label(index: u32) -> RefLabel {
     RefLabel {
         kind: RefKind::Stash,
         name: format!("stash@{{{index}}}"),
         full_name: "refs/stash".to_owned(),
         is_head: false,
+        upstream: None,
     }
 }

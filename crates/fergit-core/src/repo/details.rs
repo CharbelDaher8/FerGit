@@ -54,7 +54,7 @@ fn decode<'a>(object: &'a gix::Object<'_>, id: Oid) -> Result<gix::objs::CommitR
 
 /// The first non-blank line, without its terminator. Git never stores blank lines before the
 /// subject, but a hand-made commit can, and git's `%s` skips them too.
-fn summary_line(message: &[u8]) -> String {
+pub(super) fn summary_line(message: &[u8]) -> String {
     let line = message
         .split(|&byte| byte == b'\n')
         .find(|line| !line.trim_ascii().is_empty())

@@ -14,13 +14,18 @@
 mod details;
 mod diff;
 mod history;
+mod merges;
 mod status;
+mod table;
+mod upstream;
 mod walk;
 mod watch;
 
 use std::fmt;
 use std::path::{Path, PathBuf};
 
+pub use merges::MergeNames;
+pub use table::CommitTable;
 pub use watch::RepoWatcher;
 
 use crate::types::{CommitDetails, DiffSide, FileChange, FileDiff, Oid, RefLabel};
@@ -111,6 +116,13 @@ impl Repo {
         details::details(&self.repo.to_thread_local(), id)
     }
 
+    /// The branches the summary line of each commit in `ids` names as merged (see [`MergeNames`]),
+    /// in the same order: `None` for ids that don't name a commit and for messages that name no
+    /// branch. Commit messages never change, so results may be cached by id.
+    pub fn merge_names(&self, ids: &[Oid]) -> Result<Vec<Option<MergeNames>>, RepoError> {
+        merges::read(&self.repo.to_thread_local(), ids)
+    }
+
     /// Files that differ between `from` and `to`, sorted by path, with renames detected as in
     /// [`Repo::commit_details`]. A `from` of `None` compares against nothing, so every file of `to`
     /// counts as added. Fails if a commit side doesn't name a commit.
@@ -140,10 +152,11 @@ pub struct History {
     pub commits: CommitTable,
 }
 
-/// Where a repository's history starts, plus whether its worktree is dirty.
+/// Where a repository's history starts, plus whether its worktree is dirty and which upstream each
+/// branch follows.
 ///
 /// Commits are immutable and reachable only from these starting points, so two equal `Tips` read at
-/// different times describe the same history.
+/// different times describe the same history, drawn and labeled the same way.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Tips {
     pub head: Head,
@@ -151,12 +164,33 @@ pub struct Tips {
     /// tags, one entry per ref and each peeled, plus a [`crate::RefKind::Head`] label when HEAD is
     /// detached; sorted. The local branch HEAD points to has `is_head` set. A ref can peel to
     /// something other than a commit (`git tag t HEAD^{tree}`); its id then matches no commit.
+    /// `upstream` is always `None` here: how far a branch diverged is counted from the history, so
+    /// the session fills it in from [`Tips::upstreams`].
     pub refs: Vec<(Oid, RefLabel)>,
     /// Stash entries, newest (`stash@{0}`) first.
     pub stashes: Vec<StashEntry>,
     /// Whether the worktree or index differs from HEAD, untracked files included. Always false for
     /// bare repositories.
     pub worktree_dirty: bool,
+    /// The upstream of each local branch that has one configured, sorted by branch. Read from the
+    /// configuration as it is on disk now, not as it was when the repository was opened.
+    pub upstreams: Vec<BranchUpstream>,
+}
+
+/// The ref a local branch follows: `branch.<name>.remote` and `branch.<name>.merge`, mapped to a
+/// local ref through the remote's fetch refspecs, or the local branch `merge` names when the remote
+/// is `.`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BranchUpstream {
+    /// Full name of the local branch, e.g. `refs/heads/main`.
+    pub branch: String,
+    /// Short name of the upstream, e.g. `origin/main`.
+    pub name: String,
+    /// Full name of the upstream, e.g. `refs/remotes/origin/main`.
+    pub full_name: String,
+    /// What the upstream points to, peeled; `None` if it doesn't exist (the branch is gone upstream,
+    /// or was never fetched). Its commits are part of the history even if no listed ref names it.
+    pub id: Option<Oid>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -197,55 +231,6 @@ pub struct CommitSummary {
     pub author_email: String,
     /// Author time, seconds since the Unix epoch.
     pub author_time: i64,
-}
-
-/// Commits in display order, stored as flat arrays.
-///
-/// Display order: every commit appears before all of its parents; where that leaves the order
-/// free, more recent committer dates come first (like `git log --date-order`). `parents(i)` lists,
-/// in git order, only those parents that are themselves in the table — parents cut off by a
-/// shallow clone are omitted.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct CommitTable {
-    ids: Vec<Oid>,
-    /// `parent_ends[i]` is one past the last index into `parents` belonging to commit `i`.
-    parent_ends: Vec<u32>,
-    parents: Vec<Oid>,
-}
-
-impl CommitTable {
-    pub fn with_capacity(commits: usize) -> CommitTable {
-        CommitTable {
-            ids: Vec::with_capacity(commits),
-            parent_ends: Vec::with_capacity(commits),
-            parents: Vec::with_capacity(commits + commits / 8),
-        }
-    }
-
-    /// Appends a commit. The caller is responsible for display order and for filtering parents.
-    pub fn push(&mut self, id: Oid, parents: impl IntoIterator<Item = Oid>) {
-        self.ids.push(id);
-        self.parents.extend(parents);
-        let end = u32::try_from(self.parents.len()).expect("fewer than 4 billion parent links");
-        self.parent_ends.push(end);
-    }
-
-    pub fn len(&self) -> usize {
-        self.ids.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.ids.is_empty()
-    }
-
-    pub fn id(&self, index: usize) -> Oid {
-        self.ids[index]
-    }
-
-    pub fn parents(&self, index: usize) -> &[Oid] {
-        let start = if index == 0 { 0 } else { self.parent_ends[index - 1] as usize };
-        &self.parents[start..self.parent_ends[index] as usize]
-    }
 }
 
 /// Removes from `repo`'s in-memory configuration every section that names a program a read could

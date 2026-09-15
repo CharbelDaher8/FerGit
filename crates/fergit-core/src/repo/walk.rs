@@ -81,9 +81,15 @@ impl Graph {
             .map(ready_entry)
             .collect();
         let mut table = CommitTable::with_capacity(self.found.iter().filter(|&&f| f).count());
+        // The node of every parent link pushed, and the row each node was emitted at, so the
+        // table can record its parents' rows once every row is known.
+        let mut parent_nodes: Vec<u32> = Vec::with_capacity(self.parents.len());
+        let mut rows = vec![u32::MAX; self.ids.len()];
         while let Some(Ready { index, id, .. }) = ready.pop() {
+            rows[index as usize] = u32::try_from(table.len()).expect("fewer than 4 billion commits");
             let parents = self.parents_of(index).iter().copied().filter(|&p| found(p));
             table.push(to_oid(&id), parents.clone().map(|p| to_oid(&self.ids[p as usize])));
+            parent_nodes.extend(parents.clone());
             for parent in parents {
                 let children = &mut unemitted_children[parent as usize];
                 *children -= 1;
@@ -94,7 +100,9 @@ impl Graph {
         }
         // Commits on a cycle never become ready and are left out. Git histories can't contain
         // cycles, but a doctored commit-graph file could describe one; dropping those commits is
-        // better than looping or panicking.
+        // better than looping or panicking. A parent left out that way keeps `u32::MAX`, the row
+        // the table records for a parent it doesn't contain.
+        table.set_parent_rows(parent_nodes.iter().map(|&node| rows[node as usize]).collect());
         table
     }
 }

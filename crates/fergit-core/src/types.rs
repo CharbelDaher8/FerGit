@@ -147,6 +147,8 @@ pub struct Row {
     pub time: i64,
     /// Labels to show on this row, in display order (HEAD's branch first).
     pub refs: Vec<RefLabel>,
+    /// Branches splitting off or joining at this row, in lane order. Empty for most rows.
+    pub relations: Vec<Relation>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
@@ -170,6 +172,48 @@ pub struct RefLabel {
     pub full_name: String,
     /// True for the branch HEAD points to, and for the `HEAD` label of a detached HEAD.
     pub is_head: bool,
+    /// For a local branch with an upstream configured (`branch.<name>.merge`), that upstream and
+    /// how far the branch has diverged from it. `None` for every other ref.
+    pub upstream: Option<Upstream>,
+}
+
+/// A branch splitting off or joining another, drawn where its line meets this row's commit.
+///
+/// Git doesn't record which branch a commit was made on, so branch names are inferred: from the
+/// refs at a branch's tip and from merge commit messages (`Merge branch 'feature/x'`), carried down
+/// the branch's line. A name is `None` when nothing names the branch.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum Relation {
+    /// The branch whose line comes down lane `lane` starts at this row's commit: this row's upper
+    /// segment from lane `lane` into the node. `from` names the branch the commit is on.
+    BranchedFrom { lane: u16, branch: Option<String>, from: Option<String> },
+    /// This merge commit brings in the branch continuing in lane `lane`: this row's lower segment
+    /// from the node to lane `lane`, one per non-first parent. `into` names the branch receiving
+    /// the merge.
+    Merges { lane: u16, branch: Option<String>, into: Option<String> },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+#[serde(rename_all = "camelCase")]
+pub struct Upstream {
+    /// Short name of the upstream remote-tracking branch, e.g. `origin/main`.
+    pub name: String,
+    pub state: UpstreamState,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum UpstreamState {
+    /// The upstream ref exists locally. `ahead` counts commits on the branch the upstream lacks;
+    /// `behind` counts commits on the upstream the branch lacks.
+    Tracking { ahead: u32, behind: u32 },
+    /// The upstream is configured but its remote-tracking ref doesn't exist (deleted on the remote
+    /// and pruned, or never fetched).
+    Gone,
 }
 
 /// Declaration order is display order.

@@ -2,7 +2,7 @@
 
 use gix::refs::{Category, TargetRef};
 
-use super::{Head, History, RepoError, StashEntry, Tips, git_error, lossy, status, to_object_id, to_oid, walk};
+use super::{Head, History, RepoError, StashEntry, Tips, git_error, lossy, status, to_object_id, to_oid, upstream, walk};
 use crate::types::{Oid, RefKind, RefLabel};
 
 pub(super) fn read(repo: &gix::Repository) -> Result<History, RepoError> {
@@ -15,6 +15,9 @@ pub(super) fn read(repo: &gix::Repository) -> Result<History, RepoError> {
         .into_iter()
         .chain(tips.refs.iter().map(|(id, _)| *id))
         .chain(tips.stashes.iter().map(|stash| stash.base))
+        // Usually already a listed ref, but a fetch refspec can map an upstream anywhere; its commits
+        // are needed to count how far the branch diverged.
+        .chain(tips.upstreams.iter().filter_map(|upstream| upstream.id))
         .map(to_object_id)
         .collect();
     let commits = walk::walk(repo, &starts)?;
@@ -30,15 +33,18 @@ pub(super) fn read_tips(repo: &gix::Repository) -> Result<Tips, RepoError> {
             name: "HEAD".to_owned(),
             full_name: "HEAD".to_owned(),
             is_head: true,
+            upstream: None,
         };
         refs.push((id, label));
     }
     refs.sort_by(|(a_id, a), (b_id, b)| (a.kind, &a.full_name, a_id).cmp(&(b.kind, &b.full_name, b_id)));
+    let upstreams = upstream::read(repo, &refs)?;
     Ok(Tips {
         head,
         refs,
         stashes: read_stashes(repo)?,
         worktree_dirty: status::is_dirty(repo)?,
+        upstreams,
     })
 }
 
@@ -90,6 +96,9 @@ fn read_refs(repo: &gix::Repository, head_branch: Option<&str>) -> Result<Vec<(O
             name: lossy(short_name),
             is_head: kind == RefKind::LocalBranch && head_branch == Some(full_name.as_str()),
             full_name,
+            // Counting how far a branch diverged needs the history; the session fills this in from
+            // `Tips::upstreams`.
+            upstream: None,
         };
         // Follows symbolic refs and annotated tags (including tags of tags) to the final object.
         // A ref whose target is missing is skipped, as above.
