@@ -1,0 +1,19 @@
+---
+source: crates/fergit-graph/tests/layout/snapshots.rs
+expression: snapshot
+---
+d c
+c b
+b a
+a
+
+*  d  c0
+|     0:c0
+|     0:c0
+*  c  c0
+|     0:c0
+|     0:c0
+*  b  c0
+|     0:c0
+|     0:c0
+*  a  c0

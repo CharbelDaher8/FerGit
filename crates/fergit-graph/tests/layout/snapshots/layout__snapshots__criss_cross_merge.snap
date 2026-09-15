@@ -1,0 +1,27 @@
+---
+source: crates/fergit-graph/tests/layout/snapshots.rs
+expression: snapshot
+---
+top a2 b2
+a2 a1 b1
+b2 b1 a1
+a1 base
+b1 base
+base
+
+*      top   c0
+|\           0:c0 0>1:c1
+| |          0:c0 1:c1
+* |    a2    c0
+|\|_         0:c0 0>2:c2 1:c1
+| | |        0:c0 1:c1 2:c2
+| * |  b2    c1
+|/| |        0:c0 1>0:c0 1:c1 2:c2
+| | |        0:c0 1:c1 2:c2
+* | |  a1    c0
+| | |        0:c0 1:c1 2:c2
+| |/         0:c0 1:c1 2>1:c2
+| *    b1    c1
+| |          0:c0 1:c1
+|/           0:c0 1>0:c1
+*      base  c0

@@ -1,0 +1,17 @@
+[package]
+name = "fergit-graph"
+description = "Commit graph layout: commits in display order in, drawable lanes out. Pure, no I/O."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[features]
+specta = ["dep:specta"]
+
+[dependencies]
+serde.workspace = true
+specta = { workspace = true, optional = true, features = ["derive"] }
+
+[dev-dependencies]
+insta.workspace = true
+proptest.workspace = true
