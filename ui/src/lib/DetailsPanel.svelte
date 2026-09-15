@@ -67,6 +67,59 @@
       current = false;
     };
   });
+
+  // Keyboard movement through the file lists, for the app's key router. Focus moves between the
+  // real file buttons, so the Staged and Unstaged lists read as one list.
+  let root: HTMLElement;
+
+  function fileButtons(): HTMLButtonElement[] {
+    return [...root.querySelectorAll<HTMLButtonElement>("button.file")];
+  }
+
+  function focusedFile(buttons: HTMLButtonElement[]): number {
+    return buttons.indexOf(document.activeElement as HTMLButtonElement);
+  }
+
+  function focusFile(buttons: HTMLButtonElement[], index: number): void {
+    const button = buttons[Math.max(0, Math.min(buttons.length - 1, index))];
+    if (!button) return;
+    button.focus();
+    button.scrollIntoView({ block: "nearest" });
+  }
+
+  /**
+   * Moves keyboard focus into the file lists: onto the open file, else the first file. While no
+   * files are shown the panel itself takes focus, so list keys work once they load.
+   */
+  export function focusFiles(): void {
+    const buttons = fileButtons();
+    if (buttons.length === 0) {
+      root.focus();
+      return;
+    }
+    focusFile(buttons, Math.max(0, buttons.findIndex((button) => button.classList.contains("open"))));
+  }
+
+  /** Moves focus `by` files down (negative: up), across all lists. */
+  export function moveFile(by: number): void {
+    const buttons = fileButtons();
+    const current = focusedFile(buttons);
+    focusFile(buttons, current < 0 ? (by > 0 ? 0 : buttons.length - 1) : current + by);
+  }
+
+  /** Focuses file `index` (clamped) or the last file. */
+  export function gotoFile(index: number | "last"): void {
+    const buttons = fileButtons();
+    focusFile(buttons, index === "last" ? buttons.length - 1 : index);
+  }
+
+  /** Opens the focused file's diff; without a focused file, focuses the first one. */
+  export function openFocused(): void {
+    const buttons = fileButtons();
+    const current = focusedFile(buttons);
+    if (current < 0) focusFile(buttons, 0);
+    else buttons[current].click();
+  }
 </script>
 
 {#snippet signature(label: string, who: Signature)}
@@ -129,7 +182,7 @@
   {/if}
 {/snippet}
 
-<aside class="details" aria-label="Details">
+<aside bind:this={root} class="details" aria-label="Details" tabindex="-1">
   <header class="details-header">
     <span class="title">
       {#if subject.kind === "range"}
@@ -382,6 +435,17 @@
 
   .file:hover {
     background: var(--bg-hover);
+  }
+
+  /* The keyboard cursor in the file list. */
+  .file:focus-visible {
+    outline: 2px solid var(--focus);
+    outline-offset: -2px;
+    background: var(--bg-hover);
+  }
+
+  .details:focus {
+    outline: none;
   }
 
   .file.open {

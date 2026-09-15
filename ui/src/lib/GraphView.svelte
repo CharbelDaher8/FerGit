@@ -27,7 +27,7 @@
 
   interface Props {
     view: RepoView;
-    /** The user clicked a row or pressed Enter on the selection. */
+    /** The user clicked a row. (Keys go through the app's key router instead.) */
     onactivate: () => void;
   }
 
@@ -178,39 +178,9 @@
     };
   });
 
-  function onkeydown(event: KeyboardEvent): void {
-    if (total === 0) return;
-    const selected = view.selected;
-    const pageRows = Math.max(1, Math.floor(viewHeight / ROW_HEIGHT) - 1);
-    const topRow = Math.min(total - 1, Math.ceil(viewOffset / ROW_HEIGHT));
-    let next: number;
-    switch (event.key) {
-      case "ArrowDown":
-        next = selected === null ? topRow : selected + 1;
-        break;
-      case "ArrowUp":
-        next = selected === null ? topRow : selected - 1;
-        break;
-      case "PageDown":
-        next = (selected ?? topRow) + pageRows;
-        break;
-      case "PageUp":
-        next = (selected ?? topRow) - pageRows;
-        break;
-      case "Home":
-        next = 0;
-        break;
-      case "End":
-        next = total - 1;
-        break;
-      case "Enter":
-        if (selected !== null) onactivate();
-        return;
-      default:
-        return;
-    }
-    event.preventDefault();
-    view.select(next, true);
+  /** Gives the commit list keyboard focus. */
+  export function focus(): void {
+    scroller.focus({ preventScroll: true });
   }
 
   function onclick(event: MouseEvent): void {
@@ -235,6 +205,8 @@
   </div>
 
   <div class="body">
+    <!-- Keyboard selection is handled by the app's key router (App.svelte), not per element. -->
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
     <div
       bind:this={scroller}
       class="scroller"
@@ -245,7 +217,6 @@
         ? `row-${view.selected}`
         : undefined}
       onscroll={() => (scrollTop = scroller.scrollTop)}
-      {onkeydown}
       {onclick}
     >
       <div class="spacer" style:height="{map.height}px">

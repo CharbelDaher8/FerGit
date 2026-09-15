@@ -51,9 +51,55 @@
     element.focus({ preventScroll: true });
     return () => observer.disconnect();
   });
+
+  // Scrolling for the app's key router. Offsets go through the scroll map, so they stay right when
+  // a huge diff's scroll range is compressed.
+  let section: HTMLElement;
+
+  /** Approximate width of one monospace column, for sideways scrolling. */
+  function columnWidth(element: HTMLElement): number {
+    return parseFloat(getComputedStyle(element).fontSize) * 0.6;
+  }
+
+  /** Gives the diff keyboard focus. */
+  export function focus(): void {
+    (scroller ?? section).focus({ preventScroll: true });
+  }
+
+  /** Scrolls `lines` lines down (negative: up). */
+  export function scrollLines(lines: number): void {
+    if (!scroller) return;
+    const offset = map.toContent(scroller.scrollTop) + lines * LINE_HEIGHT;
+    scroller.scrollTop = map.toScroll(Math.max(0, offset));
+  }
+
+  /** Scrolls by `pages` viewports (0.5 for half a page), keeping a line of overlap per page. */
+  export function scrollPages(pages: number): void {
+    const perPage = Math.max(1, Math.floor(viewHeight / LINE_HEIGHT) - 1);
+    scrollLines(Math.sign(pages) * Math.max(1, Math.round(Math.abs(pages) * perPage)));
+  }
+
+  /** Scrolls row `row` (0-based, clamped) to the top, or scrolls to the end. */
+  export function scrollToRow(row: number | "last"): void {
+    if (!scroller) return;
+    scroller.scrollTop =
+      row === "last" ? scroller.scrollHeight : map.toScroll(Math.max(0, Math.min(row, count - 1)) * LINE_HEIGHT);
+  }
+
+  /** Scrolls `columns` columns right (negative: left). */
+  export function scrollColumns(columns: number): void {
+    if (!scroller) return;
+    scroller.scrollLeft += columns * columnWidth(scroller);
+  }
+
+  /** Scrolls to the start of the lines, or to the end of the longest one. */
+  export function scrollToEdge(edge: "start" | "end"): void {
+    if (!scroller) return;
+    scroller.scrollLeft = edge === "start" ? 0 : scroller.scrollWidth;
+  }
 </script>
 
-<section class="diff" aria-label="Diff">
+<section bind:this={section} class="diff" aria-label="Diff" tabindex="-1">
   <header class="diff-header">
     <button class="button" onclick={onclose} title="Back to the graph (Esc)">← Graph</button>
     <span
@@ -133,6 +179,10 @@
 </section>
 
 <style>
+  .diff:focus {
+    outline: none;
+  }
+
   .diff {
     display: flex;
     flex: 1;

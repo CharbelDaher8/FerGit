@@ -1,11 +1,13 @@
 <script lang="ts">
   import { open } from "@tauri-apps/plugin-dialog";
-  import { untrack } from "svelte";
+  import { tick, untrack } from "svelte";
   import type { FileChange } from "./lib/bindings";
   import DetailsPanel from "./lib/DetailsPanel.svelte";
   import DiffView from "./lib/DiffView.svelte";
   import GraphView from "./lib/GraphView.svelte";
   import { Inspector, subjectOf, type FileList } from "./lib/inspector.svelte";
+  import KeyHelp from "./lib/KeyHelp.svelte";
+  import { KeyInterpreter, PENDING_G_TIMEOUT_MS, type Command, type KeyContext } from "./lib/keys";
   import { session } from "./lib/session.svelte";
   import { settings } from "./lib/settings.svelte";
 
@@ -38,16 +40,122 @@
     focusBeforeDiff = null;
   }
 
+  // Keyboard: every shortcut goes through here. The interpreter turns presses into commands; `run`
+  // carries each one out in the pane the key was pressed in.
+  const keys = new KeyInterpreter();
+  /** The half-typed sequence (a count, a `g`), shown like vim's showcmd. */
+  let pendingKeys = $state("");
+  let helpOpen = $state(false);
+  let pendingTimer: ReturnType<typeof setTimeout> | undefined;
+  let graphView = $state<ReturnType<typeof GraphView>>();
+  let detailsPanel = $state<ReturnType<typeof DetailsPanel>>();
+  let diffView = $state<ReturnType<typeof DiffView>>();
+
   function onkeydown(event: KeyboardEvent): void {
-    if (event.key !== "Escape" || event.defaultPrevented) return;
-    const view = session.view;
-    if (inspector.diff) {
-      event.preventDefault();
-      closeDiff();
-    } else if (view && view.compared !== null) {
-      event.preventDefault();
-      view.compare(null);
+    if (event.defaultPrevented) return;
+    const context = keyContext(event.target);
+    const result = keys.press(
+      {
+        key: event.key,
+        ctrlKey: event.ctrlKey,
+        altKey: event.altKey,
+        metaKey: event.metaKey,
+        editable: isEditable(event.target),
+        context,
+      },
+      event.timeStamp,
+    );
+    if (result.handled) event.preventDefault();
+    showPendingKeys();
+    if (result.command) run(result.command, context);
+  }
+
+  function showPendingKeys(): void {
+    pendingKeys = keys.pending;
+    clearTimeout(pendingTimer);
+    if (pendingKeys.endsWith("g")) {
+      pendingTimer = setTimeout(() => {
+        keys.expire(performance.now());
+        pendingKeys = keys.pending;
+      }, PENDING_G_TIMEOUT_MS + 50);
     }
+  }
+
+  /** Which pane a key press belongs to, from what has focus. */
+  function keyContext(target: EventTarget | null): KeyContext {
+    if (helpOpen) return "help";
+    const element = target instanceof Element ? target : null;
+    if (element?.closest(".details")) {
+      // Other controls in the panel (parent links, "Show all") keep their own keys, Enter included.
+      const control = element.closest("button, a, input, select, textarea");
+      return control && !control.matches("button.file") ? "other" : "files";
+    }
+    if (element?.closest(".topbar, .banner, .empty")) return "other";
+    return inspector.diff ? "diff" : "graph";
+  }
+
+  function isEditable(target: EventTarget | null): boolean {
+    if (!(target instanceof HTMLElement)) return false;
+    if (target.isContentEditable || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement) {
+      return true;
+    }
+    const nonText = ["checkbox", "radio", "button", "submit", "reset", "range", "color", "file", "image"];
+    return target instanceof HTMLInputElement && !nonText.includes(target.type);
+  }
+
+  function run(command: Command, context: KeyContext): void {
+    const view = session.view;
+    switch (command.kind) {
+      case "escape":
+        if (helpOpen) helpOpen = false;
+        else if (inspector.diff) closeDiff();
+        else if (view && view.compared !== null) view.compare(null);
+        return;
+      case "help":
+        helpOpen = !helpOpen;
+        return;
+      case "close":
+        closeDiff();
+        return;
+      case "open":
+        detailsPanel?.openFocused();
+        return;
+      case "focus":
+        if (command.pane === "files") void focusFileList();
+        else if (inspector.diff) diffView?.focus();
+        else graphView?.focus();
+        return;
+      case "scrollX":
+        diffView?.scrollColumns(command.by);
+        return;
+      case "lineEdge":
+        diffView?.scrollToEdge(command.edge);
+        return;
+      case "move":
+        if (context === "files") detailsPanel?.moveFile(command.by);
+        else if (context === "diff") diffView?.scrollLines(command.by);
+        else view?.moveSelection(command.by);
+        return;
+      case "page":
+        if (context === "diff") diffView?.scrollPages(command.by);
+        else view?.pageSelection(command.by);
+        return;
+      case "goto":
+        if (context === "files") detailsPanel?.gotoFile(command.row);
+        else if (context === "diff") diffView?.scrollToRow(command.row);
+        else view?.selectRow(command.row);
+        return;
+    }
+  }
+
+  /** Opens the details panel if needed (selecting the top row if nothing is) and focuses its files. */
+  async function focusFileList(): Promise<void> {
+    const view = session.view;
+    if (!view) return;
+    if (view.selected === null) view.moveSelection(1);
+    detailsOpen = true;
+    await tick();
+    detailsPanel?.focusFiles();
   }
 
   async function openRepository(path: string): Promise<void> {
@@ -100,6 +208,12 @@
         Refresh
       </button>
     {/if}
+    <button
+      class="icon-button keys-button"
+      aria-label="Keyboard shortcuts"
+      title="Keyboard shortcuts (?)"
+      onclick={() => (helpOpen = !helpOpen)}>?</button
+    >
   </header>
 
   {#if session.error}
@@ -119,18 +233,19 @@
       <div class="workspace">
         <!-- The graph stays laid out under an open diff, so closing the diff finds it unchanged. -->
         <div class="graph-layer" inert={inspector.diff !== null}>
-          <GraphView view={session.view} onactivate={() => (detailsOpen = true)} />
+          <GraphView bind:this={graphView} view={session.view} onactivate={() => (detailsOpen = true)} />
         </div>
         {#if inspector.diff}
           <div class="diff-layer">
             {#key inspector.diff.request}
-              <DiffView diff={inspector.diff} onclose={closeDiff} />
+              <DiffView bind:this={diffView} diff={inspector.diff} onclose={closeDiff} />
             {/key}
           </div>
         {/if}
       </div>
       {#if detailsOpen && session.view.selected !== null}
         <DetailsPanel
+          bind:this={detailsPanel}
           view={session.view}
           {inspector}
           onopen={openFile}
@@ -145,6 +260,13 @@
       </div>
     {/if}
   </main>
+
+  {#if pendingKeys}
+    <div class="pending-keys" aria-live="polite" title="Keys typed so far">{pendingKeys}</div>
+  {/if}
+  {#if helpOpen}
+    <KeyHelp onclose={() => (helpOpen = false)} />
+  {/if}
 </div>
 
 <style>
@@ -211,6 +333,30 @@
     color: var(--fg-subtle);
     font-size: 12px;
     font-variant-numeric: tabular-nums;
+  }
+
+  .keys-button {
+    flex: none;
+    font-size: 13px;
+    font-weight: 600;
+  }
+
+  /* Like vim's showcmd: small, in a corner, out of the way of the mouse. */
+  .pending-keys {
+    position: fixed;
+    right: 14px;
+    bottom: 10px;
+    z-index: 10;
+    min-width: 24px;
+    padding: 1px 8px;
+    border: 1px solid var(--border-strong);
+    border-radius: 4px;
+    background: var(--bg-subtle);
+    color: var(--fg-muted);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    text-align: center;
+    pointer-events: none;
   }
 
   .banner {
