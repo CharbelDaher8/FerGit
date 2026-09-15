@@ -8,7 +8,7 @@ use std::sync::{Arc, PoisonError, RwLock};
 
 use fergit_core::repo::RepoError;
 use fergit_core::session::Session;
-use fergit_core::{CommitDetails, Oid, RepoInfo, RowsPage};
+use fergit_core::{CommitDetails, Oid, RepoInfo, RowLocation, RowsPage};
 use serde::Serialize;
 use specta_typescript::Typescript;
 use tauri::State;
@@ -102,6 +102,15 @@ async fn rows(state: State<'_, AppState>, start: u32, len: u32) -> Result<RowsPa
     blocking(move || session.rows(start, len)).await
 }
 
+/// Where the row showing `id` (a commit, a stash, or the all-zero id for uncommitted changes) is
+/// in the current snapshot; `row` is `null` if no row shows it.
+#[tauri::command]
+#[specta::specta]
+async fn locate(state: State<'_, AppState>, id: Oid) -> Result<RowLocation, AppError> {
+    let session = state.session()?;
+    blocking(move || Ok::<_, RepoError>(session.locate(id))).await
+}
+
 /// Full details of one commit; `null` if `id` isn't a commit.
 #[tauri::command]
 #[specta::specta]
@@ -112,7 +121,7 @@ async fn commit_details(state: State<'_, AppState>, id: Oid) -> Result<Option<Co
 
 fn specta_builder() -> Builder<tauri::Wry> {
     Builder::<tauri::Wry>::new()
-        .commands(collect_commands![open_repo, refresh, rows, commit_details])
+        .commands(collect_commands![open_repo, refresh, rows, locate, commit_details])
         .error_handling(ErrorHandlingMode::Throw)
 }
 

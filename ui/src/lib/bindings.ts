@@ -12,6 +12,11 @@ export const commands = {
 	refresh: () => __TAURI_INVOKE<RepoInfo>("refresh"),
 	/**  Rows `start..start + len` of the current snapshot, clamped to the rows that exist. */
 	rows: (start: number, len: number) => __TAURI_INVOKE<RowsPage>("rows", { start, len }),
+	/**
+	 *  Where the row showing `id` (a commit, a stash, or the all-zero id for uncommitted changes) is
+	 *  in the current snapshot; `row` is `null` if no row shows it.
+	 */
+	locate: (id: Oid) => __TAURI_INVOKE<RowLocation>("locate", { id }),
 	/**  Full details of one commit; `null` if `id` isn't a commit. */
 	commitDetails: (id: Oid) => __TAURI_INVOKE<{
 	id: Oid,
@@ -83,8 +88,9 @@ export type FileChange = {
 };
 
 /**
- *  Identifies one snapshot of a repository. Increases every time the visible state changes, so the
- *  UI can discard responses that belong to an older snapshot.
+ *  Identifies one snapshot of a repository. Increases every time the visible state changes, and
+ *  keeps increasing across repositories opened in the same process, so the UI can discard any
+ *  response or event from an older snapshot, including one of a previously open repository.
  */
 export type Generation = number;
 
@@ -145,6 +151,13 @@ export type Row = {
 export type RowKind = "commit" | 
 /**  Uncommitted changes in the worktree or index, drawn as a child of HEAD. */
 "workingTree" | "stash";
+
+/**  Where a row is in one snapshot. A row index means nothing without its generation. */
+export type RowLocation = {
+	generation: Generation,
+	/**  Index of the row; `None` if no row of this snapshot shows the requested id. */
+	row: number | null,
+};
 
 /**  A contiguous run of graph rows from one snapshot. */
 export type RowsPage = {
