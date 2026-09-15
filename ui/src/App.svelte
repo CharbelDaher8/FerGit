@@ -111,7 +111,7 @@
 
   <main class="main">
     {#if session.view}
-      <div class="primary">
+      <div class="workspace">
         <!-- The graph stays laid out under an open diff, so closing the diff finds it unchanged. -->
         <div class="graph-layer" inert={inspector.diff !== null}>
           <GraphView view={session.view} onactivate={() => (detailsOpen = true)} />
@@ -222,7 +222,9 @@
     min-height: 0;
   }
 
-  .primary {
+  /* Not `.primary`: that is also the class of a primary button, and styles here are scoped to the
+     component, not to one element, so the layout rule would stretch the buttons. */
+  .workspace {
     position: relative;
     display: flex;
     flex: 1;
