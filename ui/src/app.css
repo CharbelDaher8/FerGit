@@ -1,7 +1,12 @@
-/* Global theme tokens and base styles. Components style themselves with these variables. */
+/*
+ * Global theme tokens and base styles. Components style themselves with these variables; the graph
+ * canvas reads the lane colors from here too. The light theme is the default; `data-theme="dark"`
+ * on the root element (set before first paint by /theme-boot.js, then kept up to date by the app)
+ * switches to the dark one. Every color lives in this file.
+ */
 
 :root {
-  color-scheme: light dark;
+  color-scheme: light;
 
   --font-ui: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --font-mono: ui-monospace, "Cascadia Mono", "Cascadia Code", Consolas, "SF Mono", Menlo, monospace;
@@ -53,56 +58,80 @@
   /* Rows being compared in the graph. */
   --compare: #bf8700;
   --compare-bg: #fff5d1;
+
+  /* Graph lanes, in order: blue, green, orange, purple, red, teal, ochre, pink. Lines, nodes and
+     ref badges use them, so each must read on --bg and under --on-lane text. */
+  --lane-0: #0969da;
+  --lane-1: #1a7f37;
+  --lane-2: #c2410c;
+  --lane-3: #8250df;
+  --lane-4: #cf222e;
+  --lane-5: #0e7c86;
+  --lane-6: #9a6700;
+  --lane-7: #bf3989;
+
+  --shadow: rgb(0 0 0 / 0.25);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #16191d;
-    --bg-subtle: #1c2025;
-    --bg-hover: #22272e;
-    --bg-selected: #1e3a5f;
-    --bg-selected-blur: #2a3038;
-    --fg: #e1e4e8;
-    --fg-muted: #9aa4af;
-    --fg-subtle: #6e7781;
-    --border: #2d333b;
-    --border-strong: #3d444d;
-    --focus: #4c9aff;
-    --placeholder: #262b31;
-    --scrollbar: #3d444d;
+:root[data-theme="dark"] {
+  color-scheme: dark;
 
-    --button-bg: #22272e;
-    --button-hover: #2d333b;
-    --primary-bg: #1f6feb;
-    --primary-hover: #388bfd;
-    --primary-fg: #ffffff;
+  --bg: #16191d;
+  --bg-subtle: #1c2025;
+  --bg-hover: #22272e;
+  --bg-selected: #1e3a5f;
+  --bg-selected-blur: #2a3038;
+  --fg: #e1e4e8;
+  --fg-muted: #9aa4af;
+  --fg-subtle: #6e7781;
+  --border: #2d333b;
+  --border-strong: #3d444d;
+  --focus: #4c9aff;
+  --placeholder: #262b31;
+  --scrollbar: #3d444d;
 
-    --danger-bg: #3b1d20;
-    --danger-border: #6e2b30;
-    --danger-fg: #ffa198;
+  --button-bg: #22272e;
+  --button-hover: #2d333b;
+  --primary-bg: #1f6feb;
+  --primary-hover: #388bfd;
+  --primary-fg: #ffffff;
 
-    --on-lane: #0d1117;
-    --ref-head: #ff7b72;
-    --ref-tag: #d29922;
-    --ref-stash: #bc8cff;
+  --danger-bg: #3b1d20;
+  --danger-border: #6e2b30;
+  --danger-fg: #ffa198;
 
-    --status-added: #3fb950;
-    --status-modified: #d29922;
-    --status-deleted: #ff7b72;
-    --status-renamed: #bc8cff;
-    --status-copied: #39c5cf;
-    --status-type: #9aa4af;
+  --on-lane: #0d1117;
+  --ref-head: #ff7b72;
+  --ref-tag: #d29922;
+  --ref-stash: #bc8cff;
 
-    --diff-added-bg: rgba(46, 160, 67, 0.15);
-    --diff-added-gutter: rgba(63, 185, 80, 0.3);
-    --diff-removed-bg: rgba(248, 81, 73, 0.15);
-    --diff-removed-gutter: rgba(248, 81, 73, 0.3);
-    --diff-hunk-bg: rgba(56, 139, 253, 0.15);
-    --diff-hunk-fg: #9aa4af;
+  --status-added: #3fb950;
+  --status-modified: #d29922;
+  --status-deleted: #ff7b72;
+  --status-renamed: #bc8cff;
+  --status-copied: #39c5cf;
+  --status-type: #9aa4af;
 
-    --compare: #d29922;
-    --compare-bg: rgba(187, 128, 9, 0.2);
-  }
+  --diff-added-bg: rgba(46, 160, 67, 0.15);
+  --diff-added-gutter: rgba(63, 185, 80, 0.3);
+  --diff-removed-bg: rgba(248, 81, 73, 0.15);
+  --diff-removed-gutter: rgba(248, 81, 73, 0.3);
+  --diff-hunk-bg: rgba(56, 139, 253, 0.15);
+  --diff-hunk-fg: #9aa4af;
+
+  --compare: #d29922;
+  --compare-bg: rgba(187, 128, 9, 0.2);
+
+  --lane-0: #58a6ff;
+  --lane-1: #3fb950;
+  --lane-2: #f0883e;
+  --lane-3: #bc8cff;
+  --lane-4: #ff7b72;
+  --lane-5: #39c5cf;
+  --lane-6: #d29922;
+  --lane-7: #f778ba;
+
+  --shadow: rgb(0 0 0 / 0.6);
 }
 
 *,

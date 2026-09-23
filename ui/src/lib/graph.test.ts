@@ -1,12 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { Edge, Relation, Row, RowKind } from "./bindings";
 import {
-  DARK_PALETTE,
   GRAPH_PADDING,
   LABEL_FONT,
   LABEL_GAP,
   LANE_WIDTH,
-  LIGHT_PALETTE,
+  LANE_COLORS,
   MAX_LABEL_WIDTH,
   MAX_SCROLL_HEIGHT,
   ROW_HEIGHT,
@@ -18,7 +17,9 @@ import {
   laneX,
   lanesUsed,
   nextColumnWidth,
+  laneToken,
   paletteColor,
+  readLanePalette,
   relationLabels,
   rowGraphWidth,
   scrollMap,
@@ -64,9 +65,11 @@ function row(kind: RowKind, column: number, color: number, edges: Edge[] = [], r
   };
 }
 
+const PALETTE = ["#l0", "#l1", "#l2", "#l3", "#l4", "#l5", "#l6", "#l7"];
+
 function draw(rows: (Row | undefined)[], first = 0, offset = 0, options = { labels: false, width: 100 }): Call[] {
   const { ctx, calls } = recordingContext();
-  drawGraph(ctx, { first, rows, offset, width: options.width, height: 400, palette: LIGHT_PALETTE, labels: options.labels });
+  drawGraph(ctx, { first, rows, offset, width: options.width, height: 400, palette: PALETTE, labels: options.labels });
   return calls;
 }
 
@@ -104,9 +107,18 @@ describe("geometry", () => {
   });
 
   it("wraps color indices onto the palette", () => {
-    expect(paletteColor(LIGHT_PALETTE, 0)).toBe(LIGHT_PALETTE[0]);
-    expect(paletteColor(DARK_PALETTE, DARK_PALETTE.length + 1)).toBe(DARK_PALETTE[1]);
-    expect(LIGHT_PALETTE).toHaveLength(DARK_PALETTE.length);
+    expect(paletteColor(PALETTE, 0)).toBe(PALETTE[0]);
+    expect(paletteColor(PALETTE, PALETTE.length + 1)).toBe(PALETTE[1]);
+    expect(laneToken(0)).toBe("--lane-0");
+    expect(laneToken(LANE_COLORS + 2)).toBe("--lane-2");
+  });
+
+  it("reads the lane palette from the theme's tokens", () => {
+    const style = { getPropertyValue: (name: string) => ` ${name.replace("--lane-", "#c")}` };
+    const palette = readLanePalette(style);
+    expect(palette).toHaveLength(LANE_COLORS);
+    expect(palette[0]).toBe("#c0");
+    expect(palette[LANE_COLORS - 1]).toBe(`#c${LANE_COLORS - 1}`);
   });
 });
 
@@ -214,8 +226,8 @@ describe("relation labels: drawing", () => {
     ]);
     const colorBefore = (index: number) =>
       calls.slice(0, index).filter((call) => call[0] === "fillStyle=").pop()?.[1];
-    expect(colorBefore(calls.indexOf(texts[0]))).toBe(LIGHT_PALETTE[2]);
-    expect(colorBefore(calls.indexOf(texts[1]))).toBe(LIGHT_PALETTE[3]);
+    expect(colorBefore(calls.indexOf(texts[0]))).toBe(PALETTE[2]);
+    expect(colorBefore(calls.indexOf(texts[1]))).toBe(PALETTE[3]);
     expect(named(calls, "font=")).toEqual([["font=", LABEL_FONT]]);
     expect(named(calls, "globalAlpha=").pop()).toEqual(["globalAlpha=", 1]);
   });
@@ -302,7 +314,7 @@ describe("drawGraph", () => {
       ]),
     ]);
     const strokes = named(calls, "strokeStyle=").map((call) => call[1]);
-    expect(strokes.slice(0, 2)).toEqual([LIGHT_PALETTE[1], LIGHT_PALETTE[1]]);
+    expect(strokes.slice(0, 2)).toEqual([PALETTE[1], PALETTE[1]]);
   });
 
   it("draws nodes after all edges", () => {
@@ -320,7 +332,7 @@ describe("drawGraph", () => {
     expect(named(commit, "arc")).toHaveLength(1);
     expect(named(commit, "arc")[0].slice(1, 3)).toEqual([laneX(2), mid]);
     expect(named(commit, "fill")).toHaveLength(1);
-    expect(named(commit, "fillStyle=")[0][1]).toBe(LIGHT_PALETTE[3]);
+    expect(named(commit, "fillStyle=")[0][1]).toBe(PALETTE[3]);
 
     const workingTree = draw([row("workingTree", 0, 0)]);
     expect(named(workingTree, "globalCompositeOperation=").map((call) => call[1])).toEqual([

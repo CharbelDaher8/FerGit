@@ -102,7 +102,7 @@
     border: 1px solid var(--border-strong);
     border-radius: 8px;
     background: var(--bg);
-    box-shadow: 0 12px 40px rgb(0 0 0 / 0.25);
+    box-shadow: 0 12px 40px var(--shadow);
   }
 
   .help-header {

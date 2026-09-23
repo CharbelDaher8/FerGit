@@ -33,29 +33,21 @@ const ELLIPSIS = "…";
  */
 export const MAX_SCROLL_HEIGHT = 16_000_000;
 
-/** Lane colors on a light background. Index with `paletteColor`. */
-export const LIGHT_PALETTE: readonly string[] = [
-  "#0969da", // blue
-  "#1a7f37", // green
-  "#c2410c", // orange
-  "#8250df", // purple
-  "#cf222e", // red
-  "#0e7c86", // teal
-  "#9a6700", // ochre
-  "#bf3989", // pink
-];
+/**
+ * Lane colors come from the theme, as CSS tokens `--lane-0` to `--lane-{LANE_COLORS - 1}` in
+ * app.css. The DOM uses the tokens directly; the canvas gets them resolved (`readLanePalette`).
+ */
+export const LANE_COLORS = 8;
 
-/** Lane colors on a dark background. */
-export const DARK_PALETTE: readonly string[] = [
-  "#58a6ff",
-  "#3fb950",
-  "#f0883e",
-  "#bc8cff",
-  "#ff7b72",
-  "#39c5cf",
-  "#d29922",
-  "#f778ba",
-];
+/** The CSS token for a backend color index, which is unbounded. */
+export function laneToken(color: number): string {
+  return `--lane-${color % LANE_COLORS}`;
+}
+
+/** The current theme's lane colors, from the root element's computed style. */
+export function readLanePalette(style: Pick<CSSStyleDeclaration, "getPropertyValue">): string[] {
+  return Array.from({ length: LANE_COLORS }, (_, color) => style.getPropertyValue(laneToken(color)).trim());
+}
 
 /** The palette entry for a backend color index, which is unbounded. */
 export function paletteColor(palette: readonly string[], color: number): string {
@@ -237,6 +229,7 @@ export interface GraphScene {
   /** Canvas size in CSS pixels. */
   width: number;
   height: number;
+  /** Lane colors, resolved from the theme (`readLanePalette`) and indexed with `paletteColor`. */
   palette: readonly string[];
   /** Whether to draw relationship labels. */
   labels: boolean;
