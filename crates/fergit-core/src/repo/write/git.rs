@@ -4,8 +4,9 @@
 //! to remember it:
 //! - arguments are passed one by one (`Command::arg`), never through a shell;
 //! - output is in English (`LC_ALL=C`), so failures can be recognized from git's messages;
-//! - git never waits on a terminal: stdin is closed, `GIT_TERMINAL_PROMPT=0`, and credential and
-//!   passphrase prompts go to FerGit's askpass helper when one is given;
+//! - git never waits on a terminal or opens someone else's window: stdin is closed,
+//!   `GIT_TERMINAL_PROMPT=0`, Git Credential Manager is non-interactive, and credential and
+//!   passphrase prompts go to FerGit's askpass helper when one is given, and fail otherwise;
 //! - a lock file another git process briefly holds (`index.lock`, a ref's `.lock`) is waited out
 //!   with a few short retries instead of failing the operation.
 
@@ -74,16 +75,29 @@ impl Git<'_> {
         let mut command = Command::new("git");
         command
             .current_dir(self.root)
+            // No prompt program from the configuration: prompts go to FerGit's helper or nowhere.
+            // (`GIT_ASKPASS`, set below when there is a helper, takes precedence over it.)
+            .args(["-c", "core.askPass="])
             .args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .env("LC_ALL", "C")
             .env("GIT_TERMINAL_PROMPT", "0")
+            // Git Credential Manager may still supply stored credentials, but must not open its own
+            // sign-in windows: prompts belong in FerGit's dialog.
+            .env("GCM_INTERACTIVE", "never")
             // A pull that fast-forwards never needs a message, but never open an editor regardless.
             .env("GIT_MERGE_AUTOEDIT", "no");
-        if let Some(askpass) = self.askpass {
-            command.envs(askpass.env());
+        match self.askpass {
+            Some(askpass) => {
+                command.envs(askpass.env());
+            }
+            // A prompt program inherited from whatever started FerGit (an IDE's, say) must not
+            // answer for it; without a helper, an operation that needs a prompt fails.
+            None => {
+                command.env_remove("GIT_ASKPASS").env_remove("SSH_ASKPASS");
+            }
         }
         #[cfg(windows)]
         {
