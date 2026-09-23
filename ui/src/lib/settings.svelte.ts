@@ -2,6 +2,17 @@
 export type SettingsStorage = Pick<Storage, "getItem" | "setItem">;
 
 const SHOW_RELATIONS_KEY = "fergit.showRelations";
+const TABS_KEY = "fergit.tabs";
+
+/** The tabs open when the app last ran, to reopen on the next launch. */
+export interface SavedTabs {
+  /** Repository roots, in tab order. */
+  paths: string[];
+  /** Index into `paths` of the active tab; `null` when there are no tabs. */
+  active: number | null;
+}
+
+const NO_TABS: SavedTabs = { paths: [], active: null };
 
 /**
  * Viewer preferences that persist across launches. Storage can be missing or throw (disabled,
@@ -11,11 +22,13 @@ const SHOW_RELATIONS_KEY = "fergit.showRelations";
 export class Settings {
   readonly #storage: SettingsStorage | null;
   #showRelations = $state(true);
+  #tabs = $state.raw<SavedTabs>(NO_TABS);
 
   constructor(storage: SettingsStorage | null) {
     this.#storage = storage;
     const stored = read(storage, SHOW_RELATIONS_KEY);
     if (stored !== null) this.#showRelations = stored !== "false";
+    this.#tabs = parseTabs(read(storage, TABS_KEY));
   }
 
   /** Whether branch relationship labels are drawn on graph lines. On by default. */
@@ -27,6 +40,38 @@ export class Settings {
     this.#showRelations = value;
     write(this.#storage, SHOW_RELATIONS_KEY, String(value));
   }
+
+  /** The open tabs, as last saved. None by default. */
+  get tabs(): SavedTabs {
+    return this.#tabs;
+  }
+
+  set tabs(value: SavedTabs) {
+    this.#tabs = value;
+    write(this.#storage, TABS_KEY, JSON.stringify(value));
+  }
+}
+
+/**
+ * Reads saved tabs leniently: anything unreadable (a hand-edited or future format) means no tabs,
+ * entries that aren't paths are skipped, and an out-of-range active index falls back to the first.
+ */
+export function parseTabs(stored: string | null): SavedTabs {
+  if (stored === null) return NO_TABS;
+  let value: unknown;
+  try {
+    value = JSON.parse(stored);
+  } catch {
+    return NO_TABS;
+  }
+  if (typeof value !== "object" || value === null || !("paths" in value) || !Array.isArray(value.paths)) {
+    return NO_TABS;
+  }
+  const paths = value.paths.filter((path): path is string => typeof path === "string" && path !== "");
+  if (paths.length === 0) return NO_TABS;
+  const active = "active" in value ? value.active : null;
+  const valid = typeof active === "number" && Number.isInteger(active) && active >= 0 && active < paths.length;
+  return { paths, active: valid ? active : 0 };
 }
 
 function read(storage: SettingsStorage | null, key: string): string | null {
