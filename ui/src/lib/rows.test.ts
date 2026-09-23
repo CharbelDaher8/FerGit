@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import type { Row, RowsPage } from "./bindings";
 import { MAX_IN_FLIGHT, PAGE_SIZE, RowStore } from "./rows.svelte";
 
@@ -9,14 +9,12 @@ interface PendingRequest {
 }
 
 /** A fake backend whose `rows` requests stay pending until a test answers them. */
-const backend = vi.hoisted(() => ({ requests: [] as PendingRequest[] }));
+const backend = { requests: [] as PendingRequest[] };
 
-vi.mock("./bindings", () => ({
-  commands: {
-    rows: (start: number, len: number) =>
-      new Promise<RowsPage>((resolve) => backend.requests.push({ start, len, resolve })),
-  },
-}));
+const client = {
+  rows: (start: number, len: number) =>
+    new Promise<RowsPage>((resolve) => backend.requests.push({ start, len, resolve })),
+};
 
 function makeRow(index: number, generation: number): Row {
   return {
@@ -56,7 +54,7 @@ function requestedStarts(): number[] {
 }
 
 function store(generation: number, rowCount: number): RowStore {
-  return new RowStore({ root: "/repo", name: "repo", head: null, generation, rowCount });
+  return new RowStore({ root: "/repo", name: "repo", head: null, generation, rowCount }, client);
 }
 
 beforeEach(() => {
@@ -211,6 +209,7 @@ describe("RowStore generations", () => {
     const seen: (string | undefined)[] = [];
     const rows: RowStore = new RowStore(
       { root: "/repo", name: "repo", head: null, generation: 1, rowCount: 1000 },
+      client,
       () => seen.push(rows.get(0)?.id),
     );
     rows.setViewport(0, 40);
@@ -230,25 +229,6 @@ describe("RowStore generations", () => {
     rows.adopt({ root: "/repo", name: "repo", head: null, generation: 2, rowCount: 1000 });
     await settle();
     expect(woken).toBe(true);
-  });
-
-  it("replaces the repository without notifying, and discards the old repository's responses", async () => {
-    let notified = false;
-    const rows = new RowStore(
-      { root: "/a", name: "a", head: null, generation: 1, rowCount: 1000 },
-      () => (notified = true),
-    );
-    rows.setViewport(0, 40);
-    rows.replace({ root: "/b", name: "b", head: null, generation: 5, rowCount: 300 });
-    expect(notified).toBe(false);
-    expect(rows.total).toBe(300);
-    await answerAll(1, 1000); // answers for repository a arrive late
-    expect(rows.get(0)).toBeUndefined();
-    expect(rows.generation).toBe(5);
-    // Re-requested from the new repository once the old requests left the in-flight set.
-    expect(requestedStarts()).toEqual([0, 200]);
-    await answerAll(5, 300);
-    expect(rows.get(0)?.id).toBe("g5-r0");
   });
 
   it("ignores a refresh result older than what it already has", async () => {

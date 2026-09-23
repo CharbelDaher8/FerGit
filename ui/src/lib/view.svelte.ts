@@ -1,4 +1,5 @@
-import { commands, type Oid, type RepoInfo, type Row, type RowLocation } from "./bindings";
+import type { Oid, RepoInfo, Row, RowLocation } from "./bindings";
+import type { RepoClient } from "./client";
 import { ROW_HEIGHT } from "./graph";
 import { RowStore } from "./rows.svelte";
 
@@ -99,7 +100,7 @@ interface Frozen {
 }
 
 /**
- * The open repository as the user sees it: its rows, where the viewport is, which row is selected
+ * One open repository as the user sees it: its rows, where the viewport is, which row is selected
  * and which one (if any) it is compared with. Owns keeping all of that on the same content when
  * the repository changes, and navigating to a commit by id.
  *
@@ -115,6 +116,7 @@ interface Frozen {
  * component's business. All reads are reactive.
  */
 export class RepoView {
+  readonly #client: Pick<RepoClient, "rows" | "locate">;
   readonly #rows: RowStore;
   #selected = $state<number | null>(null);
   #compared = $state<number | null>(null);
@@ -127,8 +129,9 @@ export class RepoView {
   /** Identifies the latest change being re-anchored; older runs give up when it moves on. */
   #transition = 0;
 
-  constructor(info: RepoInfo) {
-    this.#rows = new RowStore(info, () => this.#repositoryChanging());
+  constructor(info: RepoInfo, client: Pick<RepoClient, "rows" | "locate">) {
+    this.#client = client;
+    this.#rows = new RowStore(info, client, () => this.#repositoryChanging());
   }
 
   /** Number of rows in the snapshot on screen. */
@@ -248,20 +251,9 @@ export class RepoView {
     this.#rows.adopt(info);
   }
 
-  /** Shows a newly opened repository from the top, with nothing selected. */
-  replace(info: RepoInfo): void {
-    this.#transition++;
-    this.#frozen = null;
-    this.#pendingReveal = null;
-    this.#rows.replace(info);
-    this.#selected = null;
-    this.#compared = null;
-    this.#scrollTo(0);
-  }
-
   /** The row showing `id` in the snapshot on screen; `null` if none does or the snapshot is changing. */
   async find(id: Oid): Promise<number | null> {
-    const location = await commands.locate(id);
+    const location = await this.#client.locate(id);
     return location.generation === this.generation ? location.row : null;
   }
 
@@ -307,11 +299,9 @@ export class RepoView {
   }
 
   async #reanchor(anchor: Anchor, token: number): Promise<void> {
-    const locations = await Promise.all([
-      locate(anchor.topId),
-      locate(anchor.selectedId),
-      locate(anchor.comparedId),
-    ]);
+    const locate = (id: Oid | null): Promise<RowLocation | undefined> =>
+      id === null ? Promise.resolve(undefined) : this.#client.locate(id);
+    const locations = await Promise.all([locate(anchor.topId), locate(anchor.selectedId), locate(anchor.comparedId)]);
     if (token !== this.#transition) return;
     const generation = this.#rows.generation;
     if (locations.some((location) => location && location.generation !== generation)) return;
@@ -337,10 +327,6 @@ export class RepoView {
 
 function isCommitRow(row: Row | undefined): boolean {
   return row !== undefined && row.kind !== "workingTree";
-}
-
-function locate(id: Oid | null): Promise<RowLocation | undefined> {
-  return id === null ? Promise.resolve(undefined) : commands.locate(id);
 }
 
 function delay(ms: number): Promise<void> {

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import type { RepoInfo, Row, RowLocation, RowsPage } from "./bindings";
 import { ROW_HEIGHT } from "./graph";
 import { RepoView, captureAnchor, restoreAnchor, rowWindow, OVERSCAN, type Anchor } from "./view.svelte";
@@ -7,30 +7,28 @@ import { RepoView, captureAnchor, restoreAnchor, rowWindow, OVERSCAN, type Ancho
  * A fake backend holding one snapshot (a generation and the ids of its rows, in order). Commands
  * answer from whatever snapshot is current when they are called, like the real one.
  */
-const backend = vi.hoisted(() => ({
+const backend = {
   generation: 1,
   ids: [] as string[],
   /** Replaces `locate`'s answer, to simulate races. */
   locate: null as null | ((id: string) => RowLocation),
   locateCalls: [] as string[],
-}));
+};
 
-vi.mock("./bindings", () => ({
-  commands: {
-    rows: async (start: number, len: number): Promise<RowsPage> => {
-      const total = backend.ids.length;
-      const from = Math.min(start, total);
-      const rows = backend.ids.slice(from, from + len).map(makeRow);
-      return { generation: backend.generation, start: from, total, rows };
-    },
-    locate: async (id: string): Promise<RowLocation> => {
-      backend.locateCalls.push(id);
-      if (backend.locate) return backend.locate(id);
-      const row = backend.ids.indexOf(id);
-      return { generation: backend.generation, row: row < 0 ? null : row };
-    },
+const client = {
+  rows: async (start: number, len: number): Promise<RowsPage> => {
+    const total = backend.ids.length;
+    const from = Math.min(start, total);
+    const rows = backend.ids.slice(from, from + len).map(makeRow);
+    return { generation: backend.generation, start: from, total, rows };
   },
-}));
+  locate: async (id: string): Promise<RowLocation> => {
+    backend.locateCalls.push(id);
+    if (backend.locate) return backend.locate(id);
+    const row = backend.ids.indexOf(id);
+    return { generation: backend.generation, row: row < 0 ? null : row };
+  },
+};
 
 /** The id of the uncommitted-changes row. */
 const ZERO = "0".repeat(40);
@@ -69,7 +67,7 @@ const HEIGHT = 10 * ROW_HEIGHT;
 
 /** A view of 100 commits scrolled `offset` px down, with its rows loaded. */
 async function openView(offset: number, selected: number | null): Promise<RepoView> {
-  const view = new RepoView(snapshot(1, ids(100)));
+  const view = new RepoView(snapshot(1, ids(100)), client);
   view.setViewport(offset, HEIGHT);
   await settle();
   view.select(selected);
@@ -226,7 +224,7 @@ describe("RepoView re-anchoring", () => {
   });
 
   it("re-anchors when a page reveals the change before any event does", async () => {
-    const view = new RepoView(snapshot(1, ids(1000)));
+    const view = new RepoView(snapshot(1, ids(1000)), client);
     view.setViewport(0, HEIGHT);
     await settle();
     view.select(10);
@@ -243,17 +241,6 @@ describe("RepoView re-anchoring", () => {
     await settle();
     expect(backend.locateCalls).toEqual([]);
     expect(view.scrollRequest).toBeNull();
-  });
-
-  it("starts from the top with nothing selected when another repository is opened", async () => {
-    const view = await openView(700, 30);
-    view.replace(snapshot(9, ids(50, "other")));
-    expect(view.selected).toBeNull();
-    expect(view.scrollRequest).toEqual({ offset: 0 });
-    view.setViewport(0, HEIGHT);
-    await settle();
-    expect(view.row(0)?.id).toBe("other0");
-    expect(backend.locateCalls).toEqual([]);
   });
 });
 
@@ -285,7 +272,7 @@ describe("RepoView compare mode", () => {
   });
 
   it("doesn't compare uncommitted changes", async () => {
-    const view = new RepoView(snapshot(1, [ZERO, ...ids(20)]));
+    const view = new RepoView(snapshot(1, [ZERO, ...ids(20)]), client);
     view.setViewport(0, HEIGHT);
     await settle();
     view.select(0);
@@ -311,13 +298,6 @@ describe("RepoView compare mode", () => {
     view.adopt(snapshot(2, ids(100).filter((id) => id !== "c20")));
     await settle();
     expect(view.selected).toBe(10);
-    expect(view.compared).toBeNull();
-  });
-
-  it("stops comparing when another repository is opened", async () => {
-    const view = await openView(0, 1);
-    view.compare(3);
-    view.replace(snapshot(9, ids(5, "other")));
     expect(view.compared).toBeNull();
   });
 });
@@ -405,7 +385,7 @@ describe("RepoView navigation", () => {
   });
 
   it("reveals a selection made before the viewport was measured, once it is", async () => {
-    const view = new RepoView(snapshot(1, ids(100)));
+    const view = new RepoView(snapshot(1, ids(100)), client);
     view.select(60, true);
     expect(view.scrollRequest).toBeNull();
     view.setViewport(0, HEIGHT);

@@ -1,4 +1,5 @@
-import { commands, type RepoInfo, type Row, type RowsPage } from "./bindings";
+import type { RepoInfo, Row, RowsPage } from "./bindings";
+import type { RepoClient } from "./client";
 
 /** Rows per `rows` request. */
 export const PAGE_SIZE = 200;
@@ -18,7 +19,7 @@ interface Waiter {
 }
 
 /**
- * The rows of the open repository, fetched from the backend a page at a time around a viewport.
+ * The rows of one open repository, fetched from the backend a page at a time around a viewport.
  * Nothing outside this class knows about pages.
  *
  * The owner reports the rows on screen with `setViewport` and reads rows with `get`, which returns
@@ -26,11 +27,11 @@ interface Waiter {
  * ahead in the scroll direction, never requests a page that is already on its way, and evicts
  * pages far from the viewport, so memory stays bounded however long the history is.
  *
- * Every page carries the generation of the snapshot it was read from, and generations only grow,
- * even across repositories. A page from a newer generation means the repository changed: the
- * owner's `onNewGeneration` runs while the old rows can still be read, then the cache is dropped,
- * the new generation and total are adopted, and the visible rows are fetched again. A page from an
- * older generation (possibly of a previously open repository) is discarded and requested again.
+ * Every page carries the generation of the snapshot it was read from, and generations only grow.
+ * A page from a newer generation means the repository changed: the owner's `onNewGeneration` runs
+ * while the old rows can still be read, then the cache is dropped, the new generation and total are
+ * adopted, and the visible rows are fetched again. A page from an older generation is discarded and
+ * requested again.
  * `adopt` applies the same rule to a refresh result or change event.
  *
  * `total`, `generation` and `get` are reactive: a Svelte template or effect that reads them runs
@@ -42,6 +43,7 @@ interface Waiter {
 export class RowStore {
   #generation: number;
   #total: number;
+  readonly #client: Pick<RepoClient, "rows">;
   readonly #onNewGeneration: () => void;
   readonly #pages = new Map<number, Row[]>();
   readonly #inFlight = new Set<number>();
@@ -57,9 +59,10 @@ export class RowStore {
    * `onNewGeneration` runs just before the store moves to a newer snapshot of the same repository,
    * while `get` still returns the old rows. It must not call back into the store.
    */
-  constructor(info: RepoInfo, onNewGeneration: () => void = () => {}) {
+  constructor(info: RepoInfo, client: Pick<RepoClient, "rows">, onNewGeneration: () => void = () => {}) {
     this.#generation = info.generation;
     this.#total = info.rowCount;
+    this.#client = client;
     this.#onNewGeneration = onNewGeneration;
   }
 
@@ -98,14 +101,8 @@ export class RowStore {
   /** Brings the store up to date with a refresh result or change event; older ones are ignored. */
   adopt(info: RepoInfo): void {
     if (info.generation < this.#generation) return;
-    if (info.generation > this.#generation) this.#reset(info.generation, info.rowCount, true);
+    if (info.generation > this.#generation) this.#reset(info.generation, info.rowCount);
     else this.#failed.clear();
-    this.#fetchWanted();
-  }
-
-  /** Switches to a newly opened repository. Unlike `adopt`, this doesn't call `onNewGeneration`. */
-  replace(info: RepoInfo): void {
-    this.#reset(info.generation, info.rowCount, false);
     this.#fetchWanted();
   }
 
@@ -137,7 +134,7 @@ export class RowStore {
 
   #request(page: number): void {
     this.#inFlight.add(page);
-    void commands
+    void this.#client
       .rows(page * PAGE_SIZE, PAGE_SIZE)
       .then(
         (result) => this.#receive(page, result),
@@ -155,7 +152,7 @@ export class RowStore {
   #receive(page: number, result: RowsPage): void {
     // An older generation is stale; the page is requested again once it leaves #inFlight.
     if (result.generation < this.#generation) return;
-    if (result.generation > this.#generation) this.#reset(result.generation, result.total, true);
+    if (result.generation > this.#generation) this.#reset(result.generation, result.total);
     if (result.start === page * PAGE_SIZE && result.rows.length > 0) {
       this.#pages.set(page, result.rows);
       this.#evict();
@@ -164,8 +161,8 @@ export class RowStore {
     this.#wakeWaiters(false);
   }
 
-  #reset(generation: number, total: number, notify: boolean): void {
-    if (notify) this.#onNewGeneration();
+  #reset(generation: number, total: number): void {
+    this.#onNewGeneration();
     this.#generation = generation;
     this.#total = total;
     this.#pages.clear();

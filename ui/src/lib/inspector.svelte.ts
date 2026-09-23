@@ -1,12 +1,5 @@
-import {
-  commands,
-  type CommitDetails,
-  type DiffSide,
-  type FileChange,
-  type FileDiff,
-  type Oid,
-  type Row,
-} from "./bindings";
+import type { CommitDetails, DiffSide, FileChange, FileDiff, Oid, Row } from "./bindings";
+import type { RepoClient } from "./client";
 import { shortId } from "./format";
 
 /** Holding an arrow key moves the selection faster than commit details need to load. */
@@ -149,6 +142,7 @@ interface Loaded {
  * dropped. Changing the subject closes the diff. Reads are reactive.
  */
 export class Inspector {
+  readonly #client: Pick<RepoClient, "commitDetails" | "changes" | "fileDiff">;
   #subject = $state.raw<Subject>({ kind: "none" });
   #details = $state.raw<CommitDetails | null | undefined>(undefined);
   #staged = $state.raw<Loaded | undefined>(undefined);
@@ -167,6 +161,10 @@ export class Inspector {
   #diffToken = 0;
   #detailsTimer: ReturnType<typeof setTimeout> | undefined;
   #pollTimer: ReturnType<typeof setInterval> | undefined;
+
+  constructor(client: Pick<RepoClient, "commitDetails" | "changes" | "fileDiff">) {
+    this.#client = client;
+  }
 
   /** What is shown. */
   get subject(): Subject {
@@ -257,7 +255,7 @@ export class Inspector {
     switch (subject.kind) {
       case "commit":
         this.#detailsTimer = setTimeout(() => {
-          void commands.commitDetails(subject.id).then((details) => {
+          void this.#client.commitDetails(subject.id).then((details) => {
             if (token === this.#subjectToken) this.#details = details;
           });
         }, DETAILS_DELAY_MS);
@@ -270,7 +268,7 @@ export class Inspector {
         break;
       case "range": {
         const sides = rangeSides(subject.older, subject.newer);
-        void commands.changes(sides.from, sides.to).then((files) => {
+        void this.#client.changes(sides.from, sides.to).then((files) => {
           if (token === this.#subjectToken) this.#range = files;
         });
         break;
@@ -286,8 +284,8 @@ export class Inspector {
     const unstaged = unstagedSides();
     this.#worktreeReading = true;
     void Promise.all([
-      commands.changes(staged.from, staged.to),
-      commands.changes(unstaged.from, unstaged.to),
+      this.#client.changes(staged.from, staged.to),
+      this.#client.changes(unstaged.from, unstaged.to),
     ])
       .then(([stagedFiles, unstagedFiles]) => {
         if (subjectToken !== this.#subjectToken || token !== this.#worktreeToken) return;
@@ -312,7 +310,7 @@ export class Inspector {
     // Reloading the same file keeps the request object, so the view keeps its scroll position.
     const shown = keep && current && sameRequest(current.request, request) ? current.request : request;
     this.#diff = { request: shown, result: keep ? current?.result : undefined };
-    void commands.fileDiff(request.from, request.to, request.path, request.oldPath).then((result) => {
+    void this.#client.fileDiff(request.from, request.to, request.path, request.oldPath).then((result) => {
       if (token === this.#diffToken) this.#diff = { request: shown, result };
     });
   }
