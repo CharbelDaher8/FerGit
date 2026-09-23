@@ -140,7 +140,14 @@ fn isolated_home() -> &'static Path {
         std::fs::create_dir_all(&home).expect("create the isolated home");
         // An empty helper clears any helper configured in a file git reads before this one (such
         // as Git for Windows' ProgramData config), so no test can reach a real credential store.
-        std::fs::write(home.join("gitconfig"), "[credential]\n\thelper =\n").expect("write the global config");
+        // Commits FerGit makes (a merge, a revert) take their identity from here. `useConfigOnly`
+        // stops git guessing one from the machine's name instead, which works on some machines
+        // and fails on others (the Windows CI runner), so a missing identity fails everywhere.
+        std::fs::write(
+            home.join("gitconfig"),
+            "[credential]\n\thelper =\n[user]\n\tname = Carl Committer\n\temail = carl@example.com\n\tuseConfigOnly = true\n",
+        )
+        .expect("write the global config");
         // SAFETY: every test starts by creating a `Fixture`, which calls this first. `OnceLock`
         // makes concurrent callers wait until initialization returns, so no other thread of this
         // process reads the environment (to spawn git or open a repository) while it's changed.
