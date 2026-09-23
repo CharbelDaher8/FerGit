@@ -150,7 +150,8 @@ jobs:
         with:
           draft: false
           generate_release_notes: true
-          files: installers/*
+          files: installers/**/*
+          fail_on_unmatched_files: true
 
   rolling:
     name: Latest build
@@ -180,4 +181,5 @@ jobs:
             For a stable version, use a numbered release instead.
           prerelease: true
           draft: false
-          files: installers/*
+          files: installers/**/*
+          fail_on_unmatched_files: true
