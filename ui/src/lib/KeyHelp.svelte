@@ -21,9 +21,18 @@
         ["gg  G", "First / last commit"],
         ["20G", "Row 20"],
         ["Ctrl+d  Ctrl+u", "Half a page down / up"],
-        ["Ctrl+f  Ctrl+b", "A page down / up (PgDn PgUp too)"],
+        ["PgDn  PgUp", "A page down / up (Ctrl+b up too)"],
         ["l  Enter", "Into the file list"],
         ["Ctrl+click", "Compare with the selected commit"],
+      ],
+    },
+    {
+      title: "Find",
+      keys: [
+        ["Ctrl+f  /", "Find commits by message, author or id"],
+        ["Enter  Shift+Enter", "Next / previous match, while typing"],
+        ["n  N", "Next / previous match (3n: third next)"],
+        ["Esc", "Close the find bar"],
       ],
     },
     {
@@ -50,7 +59,10 @@
       title: "Anywhere",
       keys: [
         ["?", "Show or hide these shortcuts"],
-        ["Esc", "Cancel a half-typed count or g, else close the diff, else stop comparing"],
+        [
+          "Esc",
+          "Cancel a half-typed count or g, else close the diff, else stop comparing, else close the find bar",
+        ],
       ],
     },
   ];

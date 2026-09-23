@@ -53,6 +53,10 @@
   /* Rows being compared in the graph. */
   --compare: #bf8700;
   --compare-bg: #fff5d1;
+
+  /* Rows the find bar found, and the current one's marker. */
+  --find: #1a7f37;
+  --find-bg: #e6f6ea;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -102,6 +106,9 @@
 
     --compare: #d29922;
     --compare-bg: rgba(187, 128, 9, 0.2);
+
+    --find: #3fb950;
+    --find-bg: rgba(46, 160, 67, 0.16);
   }
 }
 

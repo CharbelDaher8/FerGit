@@ -71,14 +71,14 @@ const run = (command: Command): KeyResult => ({ command, handled: true });
  *   start, in a diff) when no count is pending;
  * - `g` waits `PENDING_G_TIMEOUT_MS` for a second `g`;
  * - Esc cancels a pending count or `g`, and otherwise becomes `escape`;
- * - presses with Alt or Meta, into editable elements, or of lone modifier keys are ignored, and Ctrl
- *   only means something with d, u, f and b.
+ * - presses with Alt or Meta, into editable elements (but the find bar's), or of lone modifier keys
+ *   are ignored, and Ctrl only means something with d, u, b and f.
  *
  * Keymap per context:
- * - graph: j/k and ↓/↑ move, gg/G/Home/End go to an end, {n}G/{n}gg to row n, Ctrl+d/u/f/b and
+ * - graph: j/k and ↓/↑ move, gg/G/Home/End go to an end, {n}G/{n}gg to row n, Ctrl+d/u/b and
  *   PageDown/PageUp page, l/Enter focus the file list, h does nothing (leftmost pane);
  * - files: j/k and ↓/↑ move, gg/G/Home/End go to an end, l/Enter open, h focuses the graph;
- * - diff: j/k scroll lines, Ctrl+d/u/f/b page, gg/G go to an end, h/l scroll sideways, 0/$ go to
+ * - diff: j/k scroll lines, Ctrl+d/u/b page, gg/G go to an end, h/l scroll sideways, 0/$ go to
  *   a line edge, q closes; arrows and other keys keep their native scrolling;
  * - graph and files: also `/` finds, n/N go to the next/previous match (with a count);
  * - find (typing in the find bar): Enter/Shift+Enter go to the next/previous match, and Esc; every

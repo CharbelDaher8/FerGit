@@ -29,9 +29,11 @@
     view: RepoView;
     /** The user clicked a row. (Keys go through the app's key router instead.) */
     onactivate: () => void;
+    /** Which rows to mark as found by a search, and which one of them is current. */
+    highlight?: { isMatch(index: number): boolean; isCurrent(index: number): boolean };
   }
 
-  let { view, onactivate }: Props = $props();
+  let { view, onactivate, highlight }: Props = $props();
 
   /** Ref badges shown per row before collapsing the rest into "+N". */
   const MAX_BADGES = 4;
@@ -228,6 +230,8 @@
             class:selected={i === view.selected}
             class:working-tree={row?.kind === "workingTree"}
             class:compared={i === comparison?.older || i === comparison?.newer}
+            class:match={highlight?.isMatch(i)}
+            class:current-match={highlight?.isCurrent(i)}
             role="option"
             aria-selected={i === view.selected}
             style:transform="translateY({i * ROW_HEIGHT + shift}px)"
@@ -385,6 +389,15 @@
 
   .row:hover {
     background: var(--bg-hover);
+  }
+
+  /* Found by the find bar. Before the selection rules, so a selected match looks selected. */
+  .row.match {
+    background: var(--find-bg);
+  }
+
+  .row.current-match {
+    box-shadow: inset 3px 0 0 var(--find);
   }
 
   .row.selected {
