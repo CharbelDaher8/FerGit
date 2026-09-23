@@ -1,4 +1,4 @@
-import { commands, events, type RepoInfo } from "./bindings";
+import { commands, events, type Filter, type RepoInfo } from "./bindings";
 import { RepoView } from "./view.svelte";
 
 /** Quiet period after the window regains focus before refreshing, so alt-tabbing doesn't pile up. */
@@ -48,6 +48,20 @@ class Session {
     } finally {
       this.refreshing = false;
     }
+  }
+
+  /**
+   * Shows only the commits `filter` selects (`NO_FILTER`: all of them). The rows change like after
+   * a refresh, except that the selected commit, if still shown, stays in view.
+   */
+  async setFilter(filter: Filter): Promise<void> {
+    const view = this.view;
+    if (!view) return;
+    view.followSelectionOnNextChange();
+    const info = await commands.setFilter(filter);
+    // Nothing changed (the same filter): don't leave the next refresh following the selection.
+    if (info.generation === this.info?.generation) view.followSelectionOnNextChange(false);
+    this.adopt(info);
   }
 
   /**

@@ -1,9 +1,13 @@
 <script lang="ts">
   import { open } from "@tauri-apps/plugin-dialog";
   import { tick, untrack } from "svelte";
-  import type { FileChange } from "./lib/bindings";
+  import type { FileChange, Filter } from "./lib/bindings";
   import DetailsPanel from "./lib/DetailsPanel.svelte";
   import DiffView from "./lib/DiffView.svelte";
+  import { describeFilter, isFiltered } from "./lib/filter";
+  import FilterPanel from "./lib/FilterPanel.svelte";
+  import { Finder } from "./lib/find.svelte";
+  import FindBar from "./lib/FindBar.svelte";
   import GraphView from "./lib/GraphView.svelte";
   import { Inspector, subjectOf, type FileList } from "./lib/inspector.svelte";
   import KeyHelp from "./lib/KeyHelp.svelte";
@@ -26,6 +30,36 @@
     untrack(() => inspector.show(subject, head, version));
   });
   $effect(() => () => inspector.dispose());
+
+  // Find and filter. The finder searches again whenever the rows on screen move to another
+  // snapshot (a refresh, a filter), so its matches are always rows of what is shown.
+  const finder = new Finder(() => session.view);
+  let findBar = $state<ReturnType<typeof FindBar>>();
+  let filterOpen = $state(false);
+  const filter = $derived(session.info?.filter ?? null);
+  const filtered = $derived(filter !== null && isFiltered(filter));
+  $effect(() => {
+    void session.view?.generation;
+    untrack(() => finder.sync());
+  });
+
+  async function openFind(): Promise<void> {
+    if (inspector.diff) closeDiff();
+    finder.show();
+    await tick();
+    findBar?.focus();
+  }
+
+  function closeFind(): void {
+    finder.hide();
+    graphView?.focus();
+  }
+
+  function applyFilter(next: Filter): void {
+    filterOpen = false;
+    void session.setFilter(next);
+    graphView?.focus();
+  }
 
   function openFile(list: FileList, file: FileChange): void {
     if (!inspector.diff) {
@@ -60,6 +94,7 @@
         ctrlKey: event.ctrlKey,
         altKey: event.altKey,
         metaKey: event.metaKey,
+        shiftKey: event.shiftKey,
         editable: isEditable(event.target),
         context,
       },
@@ -85,12 +120,13 @@
   function keyContext(target: EventTarget | null): KeyContext {
     if (helpOpen) return "help";
     const element = target instanceof Element ? target : null;
+    if (element?.closest(".find-bar")) return element.matches("input") ? "find" : "other";
     if (element?.closest(".details")) {
       // Other controls in the panel (parent links, "Show all") keep their own keys, Enter included.
       const control = element.closest("button, a, input, select, textarea");
       return control && !control.matches("button.file") ? "other" : "files";
     }
-    if (element?.closest(".topbar, .banner, .empty")) return "other";
+    if (element?.closest(".topbar, .banner, .empty, .filter-panel")) return "other";
     return inspector.diff ? "diff" : "graph";
   }
 
@@ -108,8 +144,17 @@
     switch (command.kind) {
       case "escape":
         if (helpOpen) helpOpen = false;
+        else if (context === "find") closeFind();
+        else if (filterOpen) filterOpen = false;
         else if (inspector.diff) closeDiff();
         else if (view && view.compared !== null) view.compare(null);
+        else if (finder.open) closeFind();
+        return;
+      case "find":
+        void openFind();
+        return;
+      case "findNext":
+        void finder.step(command.by);
         return;
       case "help":
         helpOpen = !helpOpen;
@@ -195,6 +240,27 @@
         <span class="repo-root">{session.info.root}</span>
       </div>
       <span class="row-count">{session.view.total.toLocaleString()} rows</span>
+      {#if filter && filtered}
+        <span class="filter-chip" title="Showing only these commits">
+          <span class="filter-text">{describeFilter(filter)}</span>
+          <button
+            class="icon-button"
+            aria-label="Show all commits"
+            title="Show all commits"
+            onclick={() => applyFilter({ refs: [], path: null })}>×</button
+          >
+        </span>
+      {/if}
+      <button
+        class="button"
+        class:active={filtered}
+        aria-expanded={filterOpen}
+        onclick={() => (filterOpen = !filterOpen)}
+        title="Show only some branches, or commits changing a path"
+      >
+        Filter…
+      </button>
+      <button class="button" onclick={() => void openFind()} title="Find commits (Ctrl+F, /)">Find</button>
       <label class="toggle" title="Label where branches split and join on the graph (names are inferred)">
         <input type="checkbox" bind:checked={settings.showRelations} />
         Relationships
@@ -233,7 +299,15 @@
       <div class="workspace">
         <!-- The graph stays laid out under an open diff, so closing the diff finds it unchanged. -->
         <div class="graph-layer" inert={inspector.diff !== null}>
-          <GraphView bind:this={graphView} view={session.view} onactivate={() => (detailsOpen = true)} />
+          <GraphView
+            bind:this={graphView}
+            view={session.view}
+            highlight={finder.open ? finder : undefined}
+            onactivate={() => (detailsOpen = true)}
+          />
+          {#if finder.open}
+            <FindBar bind:this={findBar} {finder} onclose={closeFind} />
+          {/if}
         </div>
         {#if inspector.diff}
           <div class="diff-layer">
@@ -263,6 +337,9 @@
 
   {#if pendingKeys}
     <div class="pending-keys" aria-live="polite" title="Keys typed so far">{pendingKeys}</div>
+  {/if}
+  {#if filterOpen && filter}
+    <FilterPanel current={filter} onapply={applyFilter} onclose={() => (filterOpen = false)} />
   {/if}
   {#if helpOpen}
     <KeyHelp onclose={() => (helpOpen = false)} />
@@ -335,6 +412,40 @@
     font-variant-numeric: tabular-nums;
   }
 
+  .button.active {
+    border-color: var(--focus);
+    color: var(--focus);
+  }
+
+  .filter-chip {
+    display: flex;
+    flex: 0 1 auto;
+    align-items: center;
+    gap: 2px;
+    min-width: 0;
+    max-width: 280px;
+    padding: 0 0 0 8px;
+    border: 1px solid var(--focus);
+    border-radius: 12px;
+    background: color-mix(in srgb, var(--focus) 10%, transparent);
+    color: var(--fg);
+    font-size: 12px;
+  }
+
+  .filter-text {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .filter-chip .icon-button {
+    width: 20px;
+    height: 20px;
+    border-radius: 10px;
+    font-size: 14px;
+  }
+
   .keys-button {
     flex: none;
     font-size: 13px;
@@ -399,6 +510,7 @@
   }
 
   .graph-layer {
+    position: relative;
     display: flex;
     flex: 1;
     min-width: 0;
