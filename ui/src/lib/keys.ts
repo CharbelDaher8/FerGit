@@ -36,6 +36,10 @@ export type Command =
   | { kind: "help" }
   /** Switch to the next theme mode (system, light, dark). */
   | { kind: "theme" }
+  /** Undo the last operation (the app asks first). */
+  | { kind: "undo" }
+  /** Open the context menu of the selected row. */
+  | { kind: "menu" }
   /** Esc with nothing pending: close what is open, innermost first. */
   | { kind: "escape" }
   /** Open a repository in a new tab. */
@@ -79,8 +83,10 @@ const run = (command: Command): KeyResult => ({ command, handled: true });
  *
  * Keymap per context:
  * - graph: j/k and ↓/↑ move, gg/G/Home/End go to an end, {n}G/{n}gg to row n, Ctrl+d/u/f/b and
- *   PageDown/PageUp page, l/Enter focus the file list, h does nothing (leftmost pane);
- * - files: j/k and ↓/↑ move, gg/G/Home/End go to an end, l/Enter open, h focuses the graph;
+ *   PageDown/PageUp page, l/Enter focus the file list, h does nothing (leftmost pane), u undoes,
+ *   the menu key and Shift+F10 open the selected row's context menu;
+ * - files: j/k and ↓/↑ move, gg/G/Home/End go to an end, l/Enter open, h focuses the graph, u
+ *   undoes;
  * - diff: j/k scroll lines, Ctrl+d/u/f/b page, gg/G go to an end, h/l scroll sideways, 0/$ go to
  *   a line edge, q closes; arrows and other keys keep their native scrolling;
  * - help and other: only `?`, `T` and Esc.
@@ -123,6 +129,11 @@ export class KeyInterpreter {
       if (input.ctrlKey || (key !== "?" && key !== "T")) return IGNORED;
       this.#clear();
       return run({ kind: key === "?" ? "help" : "theme" });
+    }
+
+    if (context === "graph" && !input.ctrlKey && (key === "ContextMenu" || (key === "F10" && input.shiftKey))) {
+      this.#clear();
+      return run({ kind: "menu" });
     }
 
     if (input.ctrlKey) {
@@ -204,6 +215,10 @@ export class KeyInterpreter {
         case "h":
           this.#clear();
           return context === "files" ? run({ kind: "focus", pane: "graph" }) : CONSUMED;
+        case "u":
+          // Like vim's undo. A count means nothing: one undo at a time, each confirmed.
+          this.#clear();
+          return run({ kind: "undo" });
       }
       if (context === "graph" && (key === "PageDown" || key === "PageUp")) {
         return run({ kind: "page", by: (key === "PageDown" ? 1 : -1) * this.#takeCount(1) });

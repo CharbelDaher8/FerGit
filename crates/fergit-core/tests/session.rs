@@ -2,13 +2,14 @@
 
 mod common;
 
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use common::{Fixture, T0, commit, git, git_at, rev_parse, write};
+use common::{Fixture, T0, commit, git, git_at, git_succeeds, rev_parse, write};
 use fergit_core::session::Session;
-use fergit_core::{Oid, RefKind, Relation, Row, Upstream, UpstreamState};
+use fergit_core::{ConflictFile, Oid, RefKind, Relation, RepoState, Row, Upstream, UpstreamState};
 
 const MINUTE: i64 = 60;
 
@@ -26,8 +27,10 @@ fn upstream_of(session: &Session, branch: &str) -> Option<Upstream> {
         .upstream
 }
 
-fn tracking(name: &str, ahead: u32, behind: u32) -> Option<Upstream> {
-    Some(Upstream { name: name.to_owned(), state: UpstreamState::Tracking { ahead, behind } })
+/// Following `name`, which points where git in `repo` says it does.
+fn tracking(repo: &Path, name: &str, ahead: u32, behind: u32) -> Option<Upstream> {
+    let id = rev_parse(repo, name);
+    Some(Upstream { name: name.to_owned(), state: UpstreamState::Tracking { ahead, behind, id } })
 }
 
 /// A bare `origin.git` with one commit on `main`, a `work` repository that pushes to it, and a
@@ -113,13 +116,47 @@ fn watch_reports_a_commit_made_by_another_program() {
     let info = loop {
         let remaining = deadline.saturating_duration_since(Instant::now());
         let info = changes.recv_timeout(remaining).expect("the commit is reported within 20 seconds");
-        assert!(info.generation > opened, "only new generations are reported");
+        assert!(info.generation > opened, "a commit is a new generation");
         if info.row_count == 2 {
             break info;
         }
     };
     assert_eq!(session.locate(second).row, Some(0));
     assert_eq!(session.info(), info);
+}
+
+#[test]
+fn a_merge_in_progress_and_its_resolved_files_are_reported() {
+    let fx = Fixture::new();
+    let repo = fx.init("conflicts");
+    commit(&repo, "a.txt", "base\n", "base", T0);
+    git(&repo, &["checkout", "--quiet", "-b", "topic"]);
+    commit(&repo, "a.txt", "topic\n", "topic", T0 + MINUTE);
+    git(&repo, &["checkout", "--quiet", "main"]);
+    commit(&repo, "a.txt", "main\n", "main", T0 + 2 * MINUTE);
+    assert!(!git_succeeds(&repo, &["merge", "--quiet", "topic"]), "the merge conflicts");
+    let session = Arc::new(Session::open(&repo).unwrap());
+    let opened = session.info();
+    let conflict = |resolved| vec![ConflictFile { path: "a.txt".to_owned(), resolved }];
+    assert!(matches!(&opened.state, RepoState::Merging { conflicts, .. } if *conflicts == conflict(false)));
+    assert_eq!(opened.branch.as_deref(), Some("main"));
+    let (sender, changes) = mpsc::channel();
+    let _watcher = session.watch(move |info| drop(sender.send(info))).unwrap();
+
+    // Resolving the file changes no ref, but the state is reported all the same.
+    write(&repo, "a.txt", "both\n");
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let info = loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let info = changes.recv_timeout(remaining).expect("the resolution is reported within 20 seconds");
+        if info.state.conflicts() == conflict(true) {
+            break info;
+        }
+    };
+    assert_eq!(info.generation, opened.generation, "the graph didn't change");
+
+    git(&repo, &["merge", "--abort"]);
+    assert_eq!(session.refresh().unwrap().state, RepoState::Clean);
 }
 
 #[test]
@@ -145,8 +182,8 @@ fn upstream_state_matches_git() {
 
     let session = Session::open(&clone).unwrap();
 
-    assert_eq!(upstream_of(&session, "main"), tracking("origin/main", 2, 1));
-    assert_eq!(upstream_of(&session, "follower"), tracking("main", 0, 0));
+    assert_eq!(upstream_of(&session, "main"), tracking(&clone, "origin/main", 2, 1));
+    assert_eq!(upstream_of(&session, "follower"), tracking(&clone, "main", 0, 0));
     assert_eq!(
         upstream_of(&session, "stale"),
         Some(Upstream { name: "origin/deleted".to_owned(), state: UpstreamState::Gone })
@@ -167,7 +204,7 @@ fn refresh_notices_an_upstream_being_set() {
     git(&clone, &["branch", "--quiet", "--set-upstream-to", "origin/main", "topic"]);
 
     assert!(session.refresh().unwrap().generation > opened, "an upstream change is visible state");
-    assert_eq!(upstream_of(&session, "topic"), tracking("origin/main", 0, 0));
+    assert_eq!(upstream_of(&session, "topic"), tracking(&clone, "origin/main", 0, 0));
 }
 
 #[test]
@@ -223,7 +260,7 @@ fn a_merged_branch_behind_its_upstream_keeps_its_local_name() {
     git(&clone, &["fetch", "--quiet"]);
 
     let session = Session::open(&clone).unwrap();
-    assert_eq!(upstream_of(&session, "feature"), tracking("origin/feature", 0, 1), "the fixture is behind as intended");
+    assert_eq!(upstream_of(&session, "feature"), tracking(&clone, "origin/feature", 0, 1), "the fixture is behind as intended");
     let rows = all_rows(&session);
     let merge = rows.iter().find(|row| row.summary == "Merge branch 'feature'").expect("the merge row");
 

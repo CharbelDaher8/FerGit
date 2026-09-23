@@ -10,8 +10,8 @@ const FOCUS_REFRESH_DELAY_MS = 250;
  * App-wide state: the open tabs and the error banner.
  *
  * The backend reports changes on disk with `repoChanged`, naming the session that changed;
- * `followChanges` routes each to its tab, which takes it in like a refresh result. Focus refreshes
- * the tab in front, as a cheap fallback.
+ * `followChanges` routes each to its tab, which takes it in like a refresh result, and routes
+ * operations' `opProgress` the same way. Focus refreshes the tab in front, as a cheap fallback.
  *
  * Errors are handled in exactly one place. Commands called from here and from the views are left
  * to reject; `main.ts` routes every unhandled rejection (and uncaught error) to `reportError`,
@@ -24,19 +24,24 @@ class Session {
 
   #focusTimer: ReturnType<typeof setTimeout> | undefined;
 
-  /** Follows the backend's change events until the returned function is called. */
+  /**
+   * Follows the backend's change events, and the progress of running operations, until the returned
+   * function is called. Both name their session and go to its tab.
+   */
   followChanges(): () => void {
-    let unlisten: (() => void) | undefined;
+    const unlisten: (() => void)[] = [];
     let stopped = false;
-    void events.repoChanged
-      .listen((event) => this.tabs.adopt(event.payload.session, event.payload.info))
-      .then((stop) => {
-        if (stopped) stop();
-        else unlisten = stop;
-      });
+    const keep = (stop: () => void) => {
+      if (stopped) stop();
+      else unlisten.push(stop);
+    };
+    void events.repoChanged.listen((event) => this.tabs.adopt(event.payload.session, event.payload.info)).then(keep);
+    void events.opProgress
+      .listen((event) => this.tabs.progress(event.payload.session, event.payload.id, event.payload.text))
+      .then(keep);
     return () => {
       stopped = true;
-      unlisten?.();
+      for (const stop of unlisten) stop();
     };
   }
 

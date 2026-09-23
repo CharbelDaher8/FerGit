@@ -1,7 +1,7 @@
-//! Reading git repositories into plain data.
+//! Reading git repositories into plain data, and changing them.
 //!
-//! This is the only module that knows how git is accessed: gix for reads (and, later, the git CLI
-//! for mutations). Nothing outside it sees gix types, command lines, or git output formats.
+//! This is the only module that knows how git is accessed: gix for reads and the git CLI for
+//! mutations ([`Repo::run`]). Nothing outside it sees gix types, command lines, or git output formats.
 //!
 //! # Untrusted repositories
 //!
@@ -10,25 +10,34 @@
 //! them names. gix's read path implements neither hooks nor `core.fsmonitor`, and only network
 //! operations reach `core.sshCommand` or credential helpers. The configured programs a read *can*
 //! reach are removed when the repository is opened; see [`disable_configured_programs`].
+//!
+//! Mutations are different: they run the user's git with the repository's full configuration,
+//! hooks included, exactly as the same command in a terminal would, and only when the user asks.
 
 mod details;
 mod diff;
 mod history;
 mod merges;
+mod refs;
+mod state;
 mod status;
 mod table;
 mod upstream;
 mod walk;
 mod watch;
+mod write;
 
 use std::fmt;
 use std::path::{Path, PathBuf};
 
 pub use merges::MergeNames;
+pub use refs::RefValues;
 pub use table::CommitTable;
 pub use watch::RepoWatcher;
+pub use write::{HeadMove, OpFailure, RefMove, Restore, WorktreeMode};
 
-use crate::types::{CommitDetails, DiffSide, FileChange, FileDiff, Oid, RefLabel};
+use crate::askpass::Askpass;
+use crate::types::{CommitDetails, DiffSide, FileChange, FileDiff, Oid, Operation, RefLabel, RepoState};
 
 #[derive(Debug, thiserror::Error)]
 pub enum RepoError {
@@ -141,6 +150,32 @@ impl Repo {
         old_path: Option<&str>,
     ) -> Result<FileDiff, RepoError> {
         diff::file_diff(&self.repo.to_thread_local(), from, to, path, old_path)
+    }
+
+    /// Carries out `op` with the git CLI, passing each progress line git reports to `progress`.
+    /// Prompts for credentials go to `askpass` if given; without it, an operation that needs
+    /// credentials no helper supplies fails with [`crate::OpErrorKind::AuthFailed`].
+    ///
+    /// Nothing cached is updated: read the repository again to see the result.
+    pub fn run(&self, op: &Operation, askpass: Option<&Askpass>, progress: &mut dyn FnMut(&str)) -> Result<(), OpFailure> {
+        write::run(&self.repo.to_thread_local(), &self.root, op, askpass, progress)
+    }
+
+    /// Puts back what an operation changed, as the session worked out from the journal; see
+    /// [`Restore`]. Refused, changing nothing, if what is to be restored has moved since.
+    pub fn restore(&self, restore: &Restore, progress: &mut dyn FnMut(&str)) -> Result<(), OpFailure> {
+        write::restore(&self.repo.to_thread_local(), &self.root, restore, progress)
+    }
+
+    /// The exact current value of HEAD and every ref; see [`RefValues`].
+    pub fn ref_values(&self) -> Result<RefValues, RepoError> {
+        refs::read(&self.repo.to_thread_local())
+    }
+
+    /// What git is in the middle of, and which files have conflicts. Reads the git directory and
+    /// the index as they are now; cheap enough to call on every refresh.
+    pub fn read_state(&self) -> Result<RepoState, RepoError> {
+        state::read(&self.repo.to_thread_local())
     }
 }
 

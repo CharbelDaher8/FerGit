@@ -111,7 +111,7 @@ fn read_refs(repo: &gix::Repository, head_branch: Option<&str>) -> Result<Vec<(O
 }
 
 /// Stashes from the `refs/stash` reflog, newest first.
-fn read_stashes(repo: &gix::Repository) -> Result<Vec<StashEntry>, RepoError> {
+pub(super) fn read_stashes(repo: &gix::Repository) -> Result<Vec<StashEntry>, RepoError> {
     let context = "Can't read the stash list";
     let Some(stash) = repo
         .try_find_reference("refs/stash")

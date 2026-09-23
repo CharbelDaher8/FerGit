@@ -62,10 +62,30 @@ export const commands = {
  *  untracked files that aren't ignored.
  */
 { kind: "worktree" } | null, to: DiffSide, path: string, oldPath: string | null) => __TAURI_INVOKE<FileDiff>("file_diff", { session, from, to, path, oldPath }),
+	/**
+	 *  Runs `operation` on the repository of `session`. `id` identifies this request: running an id
+	 *  that already ran on that session returns that run's outcome instead of running again. Failures
+	 *  of the operation itself are an outcome, not a rejection; the call rejects only if the session
+	 *  isn't open.
+	 */
+	runOperation: (session: SessionId, id: OpId, operation: Operation) => __TAURI_INVOKE<OpOutcome>("run_operation", { session, id, operation }),
+	/**
+	 *  Answers the credential prompt `id`; `null` cancels it, failing the operation that asked.
+	 *  Answering a prompt that timed out or was already answered does nothing.
+	 */
+	answerPrompt: (id: number, answer: string | null) => __TAURI_INVOKE<void>("answer_prompt", { id, answer }),
+	/**
+	 *  What undo would restore now on the repository of `session`: the most recent operation on it
+	 *  that can be undone, why it can't, or that there is nothing to undo. Run it with the `undo`
+	 *  operation, naming the entry this returned.
+	 */
+	undoable: (session: SessionId) => __TAURI_INVOKE<Undoable>("undoable", { session }),
 };
 
 /** Events */
 export const events = {
+	credentialPrompt: makeEvent<CredentialPrompt>("credential-prompt"),
+	opProgress: makeEvent<OpProgress>("op-progress"),
 	repoChanged: makeEvent<RepoChanged>("repo-changed"),
 };
 
@@ -78,6 +98,12 @@ export type AppError = {
 
 export type ChangeStatus = "added" | "modified" | "deleted" | "renamed" | "copied" | "typeChanged";
 
+export type CheckoutTarget = 
+/**  A local branch, by short name. */
+{ kind: "branch"; name: string } | 
+/**  A commit, detaching HEAD. */
+{ kind: "commit"; id: Oid };
+
 export type CommitDetails = {
 	id: Oid,
 	parents: Oid[],
@@ -87,6 +113,26 @@ export type CommitDetails = {
 	message: string,
 	/**  Files changed relative to the first parent (or the empty tree for a root commit). */
 	files: FileChange[],
+};
+
+/**  A file git couldn't merge. */
+export type ConflictFile = {
+	/**  `/`-separated, relative to the worktree root. */
+	path: string,
+	/**
+	 *  The file on disk no longer has conflict markers (or was deleted): continuing will take it
+	 *  as it is.
+	 */
+	resolved: boolean,
+};
+
+/**  Git needs the user to type something. Answer with `answer_prompt(id, …)`. */
+export type CredentialPrompt = {
+	id: number,
+	/**  Git's prompt, e.g. `Password for 'https://me@github.com': `. */
+	text: string,
+	/**  Mask the input: the answer is a password, token or passphrase. */
+	secret: boolean,
 };
 
 export type DiffLine = {
@@ -166,6 +212,17 @@ export type FileDiff =
  */
 { kind: "submodule"; old: Oid | null; new: Oid | null };
 
+/**  Whether a push may replace commits on the remote. There is deliberately no unconditional force. */
+export type ForceMode = 
+/**  Only fast-forward the remote branch. */
+{ kind: "none" } | 
+/**
+ *  Replace the remote branch, but only if it is still at `expected` (`None`: only if it doesn't
+ *  exist), the tip the user was looking at. A remote branch that moved since, because someone
+ *  else pushed, fails the push as [`OpErrorKind::StaleLease`] instead of losing their work.
+ */
+{ kind: "withLease"; expected: Oid | null };
+
 /**
  *  Identifies one snapshot of a repository. Increases every time the visible state changes, and
  *  keeps increasing across repositories opened in the same process, so the UI can discard any
@@ -200,13 +257,189 @@ export type Hunk = {
 
 export type LineKind = "context" | "added" | "removed";
 
+export type MergeMode = 
+/**  Fast-forward when the branch has no commits of its own, else create a merge commit. */
+"ff" | 
+/**  Always create a merge commit. */
+"noFf" | 
+/**  Commit the combined changes as one ordinary commit, recording no merge. */
+"squash";
+
 /**  A git object id (SHA-1). Crosses IPC as a 40-character lowercase hex string. */
 export type Oid = string;
+
+/**  Why an operation failed. */
+export type OpError = {
+	kind: OpErrorKind,
+	/**  What went wrong and what to do about it, written for the user. */
+	message: string,
+	/**
+	 *  Git's output (errors first, then anything it printed to stdout), with credentials removed.
+	 *  Empty if git never ran.
+	 */
+	output: string,
+};
+
+export type OpErrorKind = 
+/**
+ *  A name isn't a valid ref name, a remote doesn't exist, or the repository isn't in a state
+ *  the operation applies to (no current branch to pull, say). Git didn't run.
+ */
+"invalidInput" | 
+/**  The branch or tag to create already exists. */
+"alreadyExists" | 
+/**  The branch to delete has commits that would become unreachable; deleting it needs `force`. */
+"notFullyMerged" | 
+/**  Uncommitted changes would be overwritten. */
+"localChanges" | 
+/**
+ *  The remote has commits the local branch lacks (push), or the two diverged (pull), or a hook
+ *  on the remote declined the push.
+ */
+"rejected" | 
+/**  A lease-protected push found the remote branch somewhere other than expected. */
+"staleLease" | 
+/**
+ *  A branch, HEAD or stash wasn't where the operation expected it (a reset's `expected` tip,
+ *  what an undo would restore from), so nothing was changed.
+ */
+"moved" | 
+/**  The remote wanted credentials that were missing, cancelled or wrong. */
+"authFailed" | 
+/**  Git couldn't be started. */
+"gitNotFound" | 
+/**  Any other failure; `message` has git's own words. */
+"git";
+
+/**
+ *  Identifies one request to run an operation. The UI generates it; running the same id twice runs
+ *  the operation once, so a double click or a retried request can't push twice.
+ */
+export type OpId = string;
+
+/**
+ *  How an operation ended. The repository is re-read either way (a failed fetch may still have
+ *  updated some refs), and `info` describes the snapshot current afterwards.
+ */
+export type OpOutcome = { kind: "done"; info: RepoInfo } | { kind: "failed"; info: RepoInfo; error: OpError };
+
+/**
+ *  A line of git's progress for the operation `id` running on `session`, e.g.
+ *  `Receiving objects: 45% (9/20)`.
+ */
+export type OpProgress = {
+	session: SessionId,
+	id: OpId,
+	text: string,
+};
 
 /**  A repository `open_repo` opened, or found already open. */
 export type OpenedRepo = {
 	session: SessionId,
 	info: RepoInfo,
+};
+
+/**
+ *  Something the user asked to do to the repository, described by intent rather than as a git
+ *  command line. Names are short ref names as shown on labels (`main`, `v1.0`); they are validated
+ *  before git sees them, and never parsed as options.
+ * 
+ *  Serialized into the operation journal, which outlives the binary: variants and fields may be
+ *  added, but never renamed or removed.
+ */
+export type Operation = 
+/**
+ *  Switch the worktree to a branch, or detach HEAD at a commit. Fails, changing nothing, if
+ *  uncommitted changes would be overwritten.
+ */
+{ kind: "checkout"; target: CheckoutTarget } | 
+/**
+ *  Create a local branch at `at`, optionally switching to it and making it follow `upstream`
+ *  (a full remote-tracking ref name such as `refs/remotes/origin/main`).
+ */
+{ kind: "createBranch"; name: string; at: Oid; checkout: boolean; upstream: string | null } | 
+/**
+ *  Ensure the local branch `name` doesn't exist: deleting one that is already gone succeeds.
+ *  Without `force`, a branch with commits not merged into its upstream (or HEAD) is kept.
+ */
+{ kind: "deleteBranch"; name: string; force: boolean } | 
+/**  Create a tag at `at`: annotated with `message` if there is one, lightweight otherwise. */
+{ kind: "createTag"; name: string; at: Oid; message: string | null } | 
+/**  Ensure the tag `name` doesn't exist: deleting one that is already gone succeeds. */
+{ kind: "deleteTag"; name: string } | 
+/**
+ *  Download from `remote`, or from every remote when `None`, removing remote-tracking branches
+ *  whose remote branch is gone if `prune` is set.
+ */
+{ kind: "fetch"; remote: string | null; prune: boolean } | 
+/**
+ *  Fetch the current branch's upstream and fast-forward the branch to it. Fails, changing no
+ *  branch, if the two have diverged; merging and rebasing are separate operations.
+ */
+{ kind: "pull" } | 
+/**
+ *  Push the local branch `branch` to the branch of the same name on `remote` (the branch's push
+ *  remote when `None`), making it the branch's upstream if `set_upstream`.
+ */
+{ kind: "push"; branch: string; remote: string | null; force: ForceMode; setUpstream: boolean } | 
+/**
+ *  Merge `from` into the current branch. Stopping with conflicts succeeds, leaving
+ *  [`RepoState::Merging`].
+ */
+{ kind: "merge"; from: Rev; mode: MergeMode } | 
+/**
+ *  Replay the current branch's commits onto `onto`, without an editor. Stopping with conflicts
+ *  succeeds, leaving [`RepoState::Rebasing`].
+ */
+{ kind: "rebase"; onto: Rev } | 
+/**
+ *  Apply the changes of `commits`, in this order, as new commits on the current branch.
+ *  Stopping with conflicts succeeds, leaving [`RepoState::CherryPicking`].
+ */
+{ kind: "cherryPick"; commits: Oid[] } | 
+/**
+ *  Add a commit undoing the changes of `commit`. Stopping with conflicts succeeds, leaving
+ *  [`RepoState::Reverting`].
+ */
+{ kind: "revert"; commit: Oid } | 
+/**
+ *  Move the local branch `branch` to `to`, but only if it is still at `expected`, the tip the
+ *  user was looking at; otherwise it fails as [`OpErrorKind::Moved`], changing nothing. For the
+ *  current branch, `mode` says what happens to the index and worktree.
+ */
+{ kind: "reset"; branch: string; to: Oid; mode: ResetMode; expected: Oid } | 
+/**
+ *  Finish what is in progress: stage the conflicted files (refused while any still has conflict
+ *  markers), then commit and carry on with the rest of a rebase, cherry-pick or revert.
+ */
+{ kind: "continue" } | 
+/**  Give up what is in progress, putting the branch and files back as they were before it. */
+{ kind: "abort" } | 
+/**  Leave out the commit a rebase, cherry-pick or revert stopped at, and carry on. */
+{ kind: "skip" } | 
+/**
+ *  Save uncommitted changes (and untracked files, if `untracked`) as a new stash, leaving the
+ *  worktree clean.
+ */
+{ kind: "stashPush"; message: string | null; untracked: boolean } | 
+/**  Apply the changes of stash `stash@{index}`, which must still be the stash `id`, keeping it. */
+{ kind: "stashApply"; index: number; id: Oid } | 
+/**  Apply stash `stash@{index}` (still `id`) and remove it; a stash that conflicts is kept. */
+{ kind: "stashPop"; index: number; id: Oid } | 
+/**  Remove stash `stash@{index}`, which must still be the stash `id`. */
+{ kind: "stashDrop"; index: number; id: Oid } | 
+/**
+ *  Put back what the journal entry `entry` recorded before it ran: the refs it moved (not
+ *  remote-tracking ones), HEAD if it switched branches, a stash it dropped or pushed. Refused,
+ *  changing nothing, if any of those has moved since.
+ */
+{ kind: "undo"; entry: OpId };
+
+/**  A ref that differed between before and after an operation. `None` means the ref didn't exist. */
+export type RefChange = {
+	name: string,
+	before: Oid | null,
+	after: Oid | null,
 };
 
 /**  Declaration order is display order. */
@@ -267,7 +500,57 @@ export type RepoInfo = {
 	rowCount: number,
 	/**  The commit HEAD points to; `None` in a repository without commits. */
 	head: Oid | null,
+	/**  Short name of the branch HEAD names (even one without commits yet); `None` when detached. */
+	branch: string | null,
+	/**  Whether a merge, rebase, cherry-pick or revert is in progress, and which files conflict. */
+	state: RepoState,
 };
+
+/**
+ *  What git is in the middle of. Stopping with conflicts is a normal state, not an error: the user
+ *  resolves the files in their editor, then continues or aborts (see [`Operation::Continue`]).
+ */
+export type RepoState = 
+/**  Nothing in progress, and no file has conflicts. */
+{ kind: "clean" } | 
+/**
+ *  A merge stopped before committing. `heads` are the commits being merged in (none for a
+ *  squash merge, which records no merge); `message` is the first line of the prepared message.
+ */
+{ kind: "merging"; heads: Oid[]; squash: boolean; message: string; conflicts: ConflictFile[] } | 
+/**
+ *  A rebase of `branch` (`None`: of a detached HEAD) onto `onto` stopped at commit `at`, which
+ *  is step `step` of `total`.
+ */
+{ kind: "rebasing"; branch: string | null; onto: Oid | null; at: Oid | null; step: number; total: number; conflicts: ConflictFile[] } | 
+/**  A cherry-pick stopped at `commit` (`None` if git no longer records which). */
+{ kind: "cherryPicking"; commit: Oid | null; conflicts: ConflictFile[] } | 
+/**  A revert stopped at `commit` (`None` if git no longer records which). */
+{ kind: "reverting"; commit: Oid | null; conflicts: ConflictFile[] } | 
+/**
+ *  Files have conflicts but nothing is in progress: a stash that didn't apply cleanly. The
+ *  stash is kept.
+ */
+{ kind: "unmerged"; conflicts: ConflictFile[] };
+
+export type ResetMode = 
+/**  Move the branch only; the undone commits' changes stay staged. */
+"soft" | 
+/**  Move the branch and reset the index; the changes stay in the files, unstaged. */
+"mixed" | 
+/**
+ *  Move the branch and make the index and files match it, discarding uncommitted changes to
+ *  tracked files. Discarded changes are gone for good: git never stored them.
+ */
+"hard";
+
+/**
+ *  A commit given by a ref (`refs/heads/x`, `refs/remotes/origin/x`, `refs/tags/v1`) or by id.
+ *  Naming the ref lets git word the merge message after it.
+ */
+export type Rev = 
+/**  A ref by full name. */
+{ kind: "ref"; name: string } | { kind: "commit"; id: Oid };
 
 export type Row = {
 	kind: RowKind,
@@ -322,6 +605,20 @@ export type Signature = {
 	offsetMinutes: number,
 };
 
+/**  What [`Operation::Undo`] would do now. */
+export type Undoable = 
+/**
+ *  The operation `entry` can be undone: `changes` are the refs that go back to `before`, and
+ *  `head` is the HEAD that is restored if HEAD moves too.
+ */
+{ kind: "ready"; entry: OpId; operation: Operation; 
+/**  When it started, milliseconds since the Unix epoch. */
+startedAtMs: number; changes: RefChange[]; head: string | null } | 
+/**  The most recent operation can't be undone, for `reason`. */
+{ kind: "blocked"; operation: Operation; reason: string } | 
+/**  No operation on this repository was recorded, or all have been undone. */
+{ kind: "nothing" };
+
 export type Upstream = {
 	/**  Short name of the upstream remote-tracking branch, e.g. `origin/main`. */
 	name: string,
@@ -330,10 +627,10 @@ export type Upstream = {
 
 export type UpstreamState = 
 /**
- *  The upstream ref exists locally. `ahead` counts commits on the branch the upstream lacks;
- *  `behind` counts commits on the upstream the branch lacks.
+ *  The upstream ref exists locally and points to `id`. `ahead` counts commits on the branch the
+ *  upstream lacks; `behind` counts commits on the upstream the branch lacks.
  */
-{ kind: "tracking"; ahead: number; behind: number } | 
+{ kind: "tracking"; ahead: number; behind: number; id: Oid } | 
 /**
  *  The upstream is configured but its remote-tracking ref doesn't exist (deleted on the remote
  *  and pruned, or never fetched).

@@ -21,6 +21,7 @@
     type ColumnWidth,
     type GraphScene,
   } from "./graph";
+  import type { MenuRequest } from "./menu";
   import { settings, theme } from "./settings.svelte";
   import { rowWindow, type RepoView } from "./view.svelte";
 
@@ -28,9 +29,11 @@
     view: RepoView;
     /** The user clicked a row. (Keys go through the app's key router instead.) */
     onactivate: () => void;
+    /** The user asked for the context menu of a row, or of one of its ref labels, at a point on screen. */
+    onmenu: (request: MenuRequest) => void;
   }
 
-  let { view, onactivate }: Props = $props();
+  let { view, onactivate, onmenu }: Props = $props();
 
   /** Ref badges shown per row before collapsing the rest into "+N". */
   const MAX_BADGES = 4;
@@ -180,10 +183,41 @@
     scroller.focus({ preventScroll: true });
   }
 
+  /** The index of the row at `clientY`, or `null` if there is none there. */
+  function rowAt(clientY: number): number | null {
+    const index = Math.floor((clientY - scroller.getBoundingClientRect().top + viewOffset) / ROW_HEIGHT);
+    return index >= 0 && index < total ? index : null;
+  }
+
+  /**
+   * Opens the context menu of the selected row, just below it, as the keyboard's menu key does.
+   * Returns false if no loaded row is selected.
+   */
+  export function openMenu(): boolean {
+    const index = view.selected;
+    const row = index === null ? undefined : view.row(index);
+    if (index === null || !row) return false;
+    const rect = scroller.getBoundingClientRect();
+    const y = rect.top + (index + 1) * ROW_HEIGHT - viewOffset;
+    onmenu({ row, ref: null, x: rect.left + graphPx, y: Math.min(Math.max(y, rect.top), rect.bottom) });
+    return true;
+  }
+
+  function oncontextmenu(event: MouseEvent): void {
+    event.preventDefault();
+    const index = rowAt(event.clientY);
+    const row = index === null ? undefined : view.row(index);
+    if (index === null || !row) return;
+    // Right-clicking one of the two compared rows keeps comparing, so the menu can act on both.
+    if (index !== view.selected && index !== view.compared) view.select(index);
+    const badge = event.target instanceof Element ? event.target.closest<HTMLElement>("[data-ref]") : null;
+    const ref = badge ? (row.refs[Number(badge.dataset.ref)] ?? null) : null;
+    onmenu({ row, ref, x: event.clientX, y: event.clientY });
+  }
+
   function onclick(event: MouseEvent): void {
-    const y = event.clientY - scroller.getBoundingClientRect().top + viewOffset;
-    const index = Math.floor(y / ROW_HEIGHT);
-    if (index < 0 || index >= total) return;
+    const index = rowAt(event.clientY);
+    if (index === null) return;
     // Ctrl+click (Cmd+click on macOS) compares with the selection; a plain click selects.
     if (!((event.ctrlKey || event.metaKey) && view.compare(index))) view.select(index);
     onactivate();
@@ -215,6 +249,7 @@
         : undefined}
       onscroll={() => (scrollTop = scroller.scrollTop)}
       {onclick}
+      {oncontextmenu}
     >
       <div class="spacer" style:height="{map.height}px">
         {#each indices as i (i)}
@@ -240,9 +275,10 @@
                     >{i === comparison.older ? "A" : "B"}</span
                   >
                 {/if}
-                {#each row.refs.slice(0, MAX_BADGES) as ref}
+                {#each row.refs.slice(0, MAX_BADGES) as ref, k}
                   {@const status = upstreamSuffix(ref.upstream)}
                   <span
+                    data-ref={k}
                     class="ref ref-{ref.kind}"
                     class:current={ref.isHead}
                     title={ref.upstream ? `${ref.fullName}\n${upstreamTitle(ref.upstream)}` : ref.fullName}

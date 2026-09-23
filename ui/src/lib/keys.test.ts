@@ -250,6 +250,24 @@ describe("keymaps", () => {
     expect(press("q")).toEqual({ command: null, handled: false });
   });
 
+  it("the menu key and Shift+F10 open the context menu from the graph only", () => {
+    const graph = keyboard("graph");
+    graph.press("3");
+    expect(graph.press("ContextMenu")).toEqual({ command: { kind: "menu" }, handled: true });
+    expect(graph.interpreter.pending).toBe("");
+    expect(graph.press("F10", { shift: true }).command).toEqual({ kind: "menu" });
+    expect(graph.press("F10")).toEqual({ command: null, handled: false });
+    expect(keyboard("files").press("ContextMenu")).toEqual({ command: null, handled: false });
+    expect(keyboard("diff").press("F10", { shift: true })).toEqual({ command: null, handled: false });
+  });
+
+  it("u undoes from the graph and the file list, but not in a diff", () => {
+    expect(keyboard("graph").type("3", "u")).toEqual([{ kind: "undo" }]);
+    expect(keyboard("files").type("u")).toEqual([{ kind: "undo" }]);
+    expect(keyboard("diff").press("u")).toEqual({ command: null, handled: false });
+    expect(keyboard("graph").press("u", { ctrl: true }).command).toEqual({ kind: "page", by: -0.5 });
+  });
+
   it("files: j/k move, gg/G go to the ends, l and Enter open, h goes back to the graph", () => {
     const { type } = keyboard("files");
     expect(type("j", "k", "g", "g", "G")).toEqual([

@@ -5,7 +5,7 @@ import type { SavedTabs } from "./settings.svelte";
 import { Tabs, type TabsBackend, type TabsMemory } from "./tabs.svelte";
 
 function info(root: string, generation = 1): RepoInfo {
-  return { root, name: root.slice(1), head: null, generation, rowCount: 0 };
+  return { root, name: root.slice(1), head: null, branch: "main", state: { kind: "clean" }, generation, rowCount: 0 };
 }
 
 /**
@@ -44,6 +44,8 @@ function fakeClient(session: number, closed: number[]): RepoClient {
     commitDetails: never,
     changes: never,
     fileDiff: never,
+    runOperation: never,
+    undoable: never,
     close: async () => void closed.push(session),
   };
 }

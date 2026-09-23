@@ -1,12 +1,26 @@
 // Dev-only: runs the real UI against a small fabricated repository, without the Rust backend, to
-// look at graph rendering (relationship labels, upstream badges). Served by `npm run dev` at
+// look at graph rendering (relationship labels, upstream badges) and at operations: pushes fail,
+// merges, rebases, cherry-picks and reverts stop with conflicts until continued or aborted, and undo
+// always offers to undo a reset. Served by `npm run dev` at
 // /mock.html; the production build doesn't include it.
 
 import { mockIPC } from "@tauri-apps/api/mocks";
 import { mount } from "svelte";
 import App from "../App.svelte";
 import "../app.css";
-import type { Edge, RefLabel, Relation, RepoInfo, Row, RowsPage, Upstream } from "../lib/bindings";
+import type {
+  Edge,
+  OpOutcome,
+  Operation,
+  RefLabel,
+  Relation,
+  RepoInfo,
+  RepoState,
+  Row,
+  RowsPage,
+  Undoable,
+  Upstream,
+} from "../lib/bindings";
 import { session } from "../lib/session.svelte";
 
 const up = (from: number, to: number, color: number): Edge => ({ half: "upper", from, to, color });
@@ -15,7 +29,7 @@ const through = (lane: number, color: number): Edge[] => [up(lane, lane, color),
 
 const tracking = (name: string, ahead: number, behind: number): Upstream => ({
   name,
-  state: { kind: "tracking", ahead, behind },
+  state: { kind: "tracking", ahead, behind, id: "0".repeat(40) },
 });
 const local = (name: string, upstream: Upstream | null = null, isHead = false): RefLabel => ({
   kind: "localBranch",
@@ -145,12 +159,14 @@ const rows: Row[] = specs.map((spec, index) => ({
   relations: spec.relations ?? [],
 }));
 
-const info: RepoInfo = {
+let info: RepoInfo = {
   root: "C:\\mock\\relations-demo",
   name: "relations-demo",
   generation: 1,
   rowCount: rows.length,
   head: rows[0].id,
+  branch: "main",
+  state: { kind: "clean" },
 };
 
 mockIPC((command, payload) => {
@@ -171,12 +187,65 @@ mockIPC((command, payload) => {
     }
     case "changes":
       return [];
+    case "undoable": {
+      const undoable: Undoable = {
+        kind: "ready",
+        entry: "mock-reset",
+        operation: { kind: "reset", branch: "main", to: rows[2].id, mode: "hard", expected: rows[0].id },
+        startedAtMs: Date.now() - 60_000,
+        changes: [{ name: "refs/heads/main", before: rows[0].id, after: rows[2].id }],
+        head: null,
+      };
+      return undoable;
+    }
+    case "run_operation": {
+      // Pushes are rejected, to show how failures look; everything else succeeds after a moment.
+      const op = args.operation as Operation;
+      info = { ...info, state: nextState(op, info.state) };
+      const outcome: OpOutcome =
+        op.kind === "push"
+          ? {
+              kind: "failed",
+              info,
+              error: {
+                kind: "rejected",
+                message: `origin has commits on ${op.branch} that you don't have. Pull or fetch and integrate them first, or force-push with lease to replace them.`,
+                output: `To https://example.com/repo.git\n!\trefs/heads/${op.branch}:refs/heads/${op.branch}\t[rejected] (fetch first)\nDone`,
+              },
+            }
+          : { kind: "done", info };
+      return new Promise((resolve) => setTimeout(() => resolve(outcome), 800));
+    }
     case "plugin:event|listen":
       return 1;
     default:
       return null;
   }
 });
+
+/** What the mock repository is in the middle of after `op`. */
+function nextState(op: Operation, state: RepoState): RepoState {
+  const conflicts = [
+    { path: "src/parser.rs", resolved: false },
+    { path: "README.md", resolved: true },
+  ];
+  switch (op.kind) {
+    case "merge":
+      return { kind: "merging", heads: [rows[3].id], squash: op.mode === "squash", message: "Merge branch 'topic'", conflicts };
+    case "rebase":
+      return { kind: "rebasing", branch: "main", onto: rows[3].id, at: rows[1].id, step: 1, total: 3, conflicts };
+    case "cherryPick":
+      return { kind: "cherryPicking", commit: op.commits[0], conflicts };
+    case "revert":
+      return { kind: "reverting", commit: op.commit, conflicts };
+    case "continue":
+    case "abort":
+    case "skip":
+      return { kind: "clean" };
+    default:
+      return state;
+  }
+}
 
 window.addEventListener("unhandledrejection", (event) => {
   event.preventDefault();

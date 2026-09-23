@@ -15,6 +15,14 @@ pub const T0: i64 = 1_700_000_000;
 pub const AUTHOR_NAME: &str = "Ada Author";
 pub const AUTHOR_EMAIL: &str = "ada@example.com";
 
+/// Environment that keeps git and Git Credential Manager from prompting anyone: tests must never
+/// open a window or wait on a terminal.
+const NO_PROMPTS: [(&str, &str); 3] =
+    [("GIT_TERMINAL_PROMPT", "0"), ("GCM_INTERACTIVE", "never"), ("SSH_ASKPASS_REQUIRE", "never")];
+
+/// FerGit's askpass helper, which, started without the app's endpoint, answers nothing and fails.
+const REFUSING_ASKPASS: &str = env!("CARGO_BIN_EXE_fergit-askpass");
+
 /// A temp directory holding the repositories of one test. Deleted on drop.
 pub struct Fixture {
     dir: TempDir,
@@ -88,6 +96,13 @@ fn git_command(cwd: &Path, args: &[&str], date: &str) -> Command {
         .env("GIT_COMMITTER_NAME", "Carl Committer")
         .env("GIT_COMMITTER_EMAIL", "carl@example.com")
         .env("GIT_COMMITTER_DATE", date)
+        .envs(NO_PROMPTS)
+        // A scripted merge or rebase must never wait on an editor.
+        .env("GIT_EDITOR", ":")
+        .env("GIT_SEQUENCE_EDITOR", ":")
+        .env("GIT_ASKPASS", REFUSING_ASKPASS)
+        .env("SSH_ASKPASS", REFUSING_ASKPASS)
+        .args(["-c", "credential.helper="])
         .args(["-c", "init.defaultBranch=main", "-c", "commit.gpgSign=false", "-c", "tag.gpgSign=false"])
         .args(["-c", "core.autocrlf=false", "-c", "core.fsmonitor=false"])
         .args(args);
@@ -123,7 +138,9 @@ fn isolated_home() -> &'static Path {
         // A fixed location, so repeated runs reuse it instead of leaking a directory each time.
         let home = std::env::temp_dir().join("fergit-core-tests-home");
         std::fs::create_dir_all(&home).expect("create the isolated home");
-        std::fs::write(home.join("gitconfig"), "").expect("write an empty global config");
+        // An empty helper clears any helper configured in a file git reads before this one (such
+        // as Git for Windows' ProgramData config), so no test can reach a real credential store.
+        std::fs::write(home.join("gitconfig"), "[credential]\n\thelper =\n").expect("write the global config");
         // SAFETY: every test starts by creating a `Fixture`, which calls this first. `OnceLock`
         // makes concurrent callers wait until initialization returns, so no other thread of this
         // process reads the environment (to spawn git or open a repository) while it's changed.
@@ -133,7 +150,13 @@ fn isolated_home() -> &'static Path {
             std::env::set_var("HOME", &home);
             std::env::set_var("USERPROFILE", &home);
             std::env::set_var("XDG_CONFIG_HOME", &home);
-            std::env::set_var("GIT_TERMINAL_PROMPT", "0");
+            for (name, value) in NO_PROMPTS {
+                std::env::set_var(name, value);
+            }
+            // Operations FerGit runs without its own helper remove these; with one, they're
+            // replaced. Either way a prompt never reaches the desktop.
+            std::env::set_var("GIT_ASKPASS", REFUSING_ASKPASS);
+            std::env::set_var("SSH_ASKPASS", REFUSING_ASKPASS);
             for inherited in [
                 "GIT_DIR",
                 "GIT_WORK_TREE",

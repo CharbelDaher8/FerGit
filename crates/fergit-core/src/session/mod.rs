@@ -3,9 +3,17 @@
 //! Everything a session holds is derived from git and can be rebuilt at any time; the session never
 //! patches its own copy of repository state. [`Session::refresh`] re-reads git and swaps in a new
 //! snapshot, with a new generation, only if something visible changed.
+//!
+//! Changes go through [`Session::run`]: one operation at a time, each journaled, followed by a
+//! re-read.
 
+pub mod journal;
+mod operations;
 mod registry;
 mod relations;
+mod undo;
+
+pub use operations::OpContext;
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -17,9 +25,10 @@ use fergit_graph::{GraphRow, Layout};
 use crate::id_map::IdMap;
 use crate::repo::{CommitTable, History, MergeNames, Repo, RepoError, RepoWatcher};
 use crate::types::{
-    CommitDetails, DiffSide, FileChange, FileDiff, Generation, Oid, RefKind, RefLabel, RepoInfo, Row, RowKind,
-    RowLocation, RowsPage, Upstream, UpstreamState,
+    CommitDetails, DiffSide, FileChange, FileDiff, Generation, Oid, RefKind, RefLabel, RepoInfo, RepoState, Row,
+    RowKind, RowLocation, RowsPage, Upstream, UpstreamState,
 };
+use crate::repo::Head;
 pub use registry::Sessions;
 use relations::{Relations, RelationsBuilder, RowInput, branch_name};
 
@@ -36,11 +45,16 @@ fn next_generation() -> Generation {
 pub struct Session {
     repo: Repo,
     current: RwLock<Arc<Snapshot>>,
+    /// What git is in the middle of, as of the last refresh. Kept beside the snapshot rather than in
+    /// it: resolving a conflict changes it without changing the graph, and needs no new layout.
+    state: RwLock<RepoState>,
     /// Serializes refreshes so two of them can't install snapshots out of order.
     refresh_lock: Mutex<()>,
     /// What each merge commit's message names, by commit. Messages never change, so entries stay
     /// valid across snapshots and a refresh reads only the merges it hasn't seen before.
     merge_names: Mutex<IdMap<Option<MergeNames>>>,
+    /// Held while an operation runs, which makes operations run one at a time.
+    writer: Mutex<operations::Writer>,
 }
 
 impl Session {
@@ -51,6 +65,7 @@ impl Session {
 
     /// Reads the first snapshot of an already opened repository.
     fn with_repo(repo: Repo) -> Result<Session, RepoError> {
+        let state = repo.read_state()?;
         let history = repo.read_history()?;
         let mut merge_names = IdMap::default();
         read_merge_names(&repo, &history.commits, &mut merge_names)?;
@@ -58,8 +73,10 @@ impl Session {
         Ok(Session {
             repo,
             current: RwLock::new(Arc::new(snapshot)),
+            state: RwLock::new(state),
             refresh_lock: Mutex::new(()),
             merge_names: Mutex::new(merge_names),
+            writer: Mutex::default(),
         })
     }
 
@@ -68,13 +85,14 @@ impl Session {
     }
 
     /// Re-reads the repository and returns info for the snapshot that is current afterwards. The
-    /// generation is unchanged if nothing visible changed.
+    /// generation is unchanged if the graph didn't change; the [`RepoState`] is always current.
     ///
     /// Only the tips are read at first; the commit walk, the expensive part of a long history, runs
     /// only when they differ from the current snapshot's.
     pub fn refresh(&self) -> Result<RepoInfo, RepoError> {
         let _refreshing = self.refresh_lock.lock().unwrap_or_else(PoisonError::into_inner);
         let current = self.snapshot();
+        *self.state.write().unwrap_or_else(PoisonError::into_inner) = self.repo.read_state()?;
         if self.repo.read_tips()? == current.history.tips {
             return Ok(self.info_for(&current));
         }
@@ -87,7 +105,8 @@ impl Session {
     }
 
     /// Keeps the session current: refreshes, on a background thread, whenever the repository may
-    /// have changed, and calls `on_change` with the new info when the generation changed.
+    /// have changed, and calls `on_change` with the new info when it changed (a new generation, or
+    /// a new [`RepoState`], as when a conflict is resolved).
     ///
     /// A refresh that fails in the background is dropped rather than reported: the repository may be
     /// halfway through a git operation, and the next change or an explicit refresh surfaces a lasting
@@ -98,9 +117,9 @@ impl Session {
             let Some(session) = session.upgrade() else {
                 return;
             };
-            let before = session.info().generation;
+            let before = session.info();
             if let Ok(info) = session.refresh()
-                && info.generation != before
+                && info != before
             {
                 on_change(info);
             }
@@ -213,6 +232,12 @@ impl Session {
             generation: snapshot.generation,
             row_count: snapshot.row_count(),
             head: snapshot.history.tips.head.id(),
+            branch: match &snapshot.history.tips.head {
+                Head::Branch { name, .. } => Some(name.clone()),
+                Head::Unborn { branch } => Some(branch.clone()),
+                Head::Detached { .. } => None,
+            },
+            state: self.state.read().unwrap_or_else(PoisonError::into_inner).clone(),
         }
     }
 }
@@ -375,7 +400,8 @@ fn upstream_states(history: &History) -> HashMap<&str, Upstream> {
     }
     if !pairs.is_empty() {
         for (upstream, (ahead, behind)) in tracked.into_iter().zip(history.commits.ahead_behind(&pairs)) {
-            let state = UpstreamState::Tracking { ahead, behind };
+            let id = upstream.id.expect("only upstreams that exist are tracked");
+            let state = UpstreamState::Tracking { ahead, behind, id };
             states.insert(upstream.branch.as_str(), Upstream { name: upstream.name.clone(), state });
         }
     }

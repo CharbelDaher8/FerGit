@@ -2,9 +2,14 @@
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { open } from "@tauri-apps/plugin-dialog";
   import { tick } from "svelte";
+  import { followCredentialPrompts, perform } from "./lib/actions";
+  import Dialog from "./lib/Dialog.svelte";
+  import { dialogs } from "./lib/dialogs.svelte";
   import KeyHelp from "./lib/KeyHelp.svelte";
   import { KeyInterpreter, PENDING_G_TIMEOUT_MS, type Command, type KeyContext } from "./lib/keys";
+  import OperationStatus from "./lib/OperationStatus.svelte";
   import { session } from "./lib/session.svelte";
+  import StateBanner from "./lib/StateBanner.svelte";
   import TabPane from "./lib/TabPane.svelte";
   import type { Tab } from "./lib/tabs.svelte";
   import { settings, theme } from "./lib/settings.svelte";
@@ -63,7 +68,7 @@
       const control = element.closest("button, a, input, select, textarea");
       return control && !control.matches("button.file") ? "other" : "files";
     }
-    if (element?.closest(".tabstrip, .topbar, .banner, .empty")) return "other";
+    if (element?.closest(".tabstrip, .topbar, .banner, .empty, .failure")) return "other";
     return tabs.active?.inspector.diff ? "diff" : "graph";
   }
 
@@ -87,6 +92,9 @@
         return;
       case "theme":
         theme.cycle();
+        return;
+      case "undo":
+        if (tabs.active) void perform(tabs.active, { kind: "undo" });
         return;
       case "newTab":
         void chooseRepository();
@@ -165,8 +173,10 @@
     }
   });
 
-  // Follow changes the backend detects on disk for as long as the app runs.
+  // Follow changes the backend detects on disk, and operations' progress, for as long as the app
+  // runs. Ask for the credentials git needs, whichever tab's operation needs them, in one dialog.
   $effect(() => session.followChanges());
+  $effect(() => followCredentialPrompts());
 
   // Reopen the tabs of the previous launch.
   void tabs.restore().then(focusActive);
@@ -239,6 +249,20 @@
         <input type="checkbox" bind:checked={settings.showRelations} />
         Relationships
       </label>
+      <button
+        class="button"
+        onclick={() => void perform(tab, { kind: "fetch", remote: null })}
+        title="Fetch every remote, removing remote branches that were deleted there"
+      >
+        Fetch
+      </button>
+      <button
+        class="button"
+        onclick={() => void perform(tab, { kind: "undo" })}
+        title="Undo the last operation made here from FerGit, after saying what it restores (u)"
+      >
+        Undo
+      </button>
       <button class="button" onclick={() => tab.refresh()} disabled={tab.refreshing} title="Re-read the repository">
         Refresh
       </button>
@@ -255,6 +279,16 @@
         onclick={() => session.dismissError()}>×</button
       >
     </div>
+  {/if}
+
+  {#if tabs.active}
+    {@const tab = tabs.active}
+    <StateBanner
+      repoState={tab.info.state}
+      busy={tab.operations.active.length > 0}
+      onaction={(kind) => void perform(tab, { kind })}
+    />
+    <OperationStatus operations={tab.operations} />
   {/if}
 
   <main class="main">
@@ -279,6 +313,11 @@
   {/if}
   {#if helpOpen}
     <KeyHelp onclose={() => (helpOpen = false)} />
+  {/if}
+  {#if dialogs.current}
+    {#key dialogs.current}
+      <Dialog spec={dialogs.current.spec} onclose={(values) => dialogs.close(values)} />
+    {/key}
   {/if}
 </div>
 

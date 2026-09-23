@@ -1,16 +1,19 @@
 <!--
-  One tab's repository: the graph, the diff opened over it, and the details panel. Every open tab
-  keeps its pane mounted, hidden while another tab is in front, so switching back finds the graph
-  scrolled, the files focused and the diff open exactly as they were.
+  One tab's repository: the graph, the diff opened over it, the details panel, and the graph's
+  context menu. Every open tab keeps its pane mounted, hidden while another tab is in front, so
+  switching back finds the graph scrolled, the files focused and the diff open exactly as they were.
 -->
 <script lang="ts">
   import { tick, untrack } from "svelte";
+  import { perform } from "./actions";
   import type { FileChange } from "./bindings";
+  import ContextMenu from "./ContextMenu.svelte";
   import DetailsPanel from "./DetailsPanel.svelte";
   import DiffView from "./DiffView.svelte";
   import GraphView from "./GraphView.svelte";
   import { subjectOf, type FileList } from "./inspector.svelte";
   import type { Command, KeyContext } from "./keys";
+  import { menuFor, type MenuContext, type MenuEntry, type MenuRequest } from "./menu";
   import type { Tab } from "./tabs.svelte";
 
   interface Props {
@@ -26,6 +29,39 @@
   let graphView = $state<ReturnType<typeof GraphView>>();
   let detailsPanel = $state<ReturnType<typeof DetailsPanel>>();
   let diffView = $state<ReturnType<typeof DiffView>>();
+  /** The open context menu; where focus was before it opened goes back there when it closes. */
+  let menu = $state.raw<{ x: number; y: number; entries: MenuEntry[]; returnFocus: HTMLElement | null } | null>(null);
+
+  function openMenu({ row, ref, x, y }: MenuRequest): void {
+    const entries = menuFor(row, ref, menuContext());
+    if (entries.length === 0) return;
+    const returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    menu = { x, y, entries, returnFocus };
+  }
+
+  /** What the menu needs to know about the repository: the current branch, and what is going on. */
+  function menuContext(): MenuContext {
+    const { info, view } = tab;
+    const comparison = view.comparison;
+    const [older, newer] = comparison ? [view.row(comparison.older), view.row(comparison.newer)] : [];
+    const commits = older?.kind === "commit" && newer?.kind === "commit";
+    return {
+      branch: info.branch,
+      head: info.head,
+      busy: info.state.kind !== "clean",
+      compared: commits ? { older: older.id, newer: newer.id } : null,
+    };
+  }
+
+  function closeMenu(): void {
+    menu?.returnFocus?.focus({ preventScroll: true });
+    menu = null;
+  }
+
+  // A tab sent to the back closes its menu, rather than showing it again when it comes back.
+  $effect(() => {
+    if (!active) untrack(() => (menu = null));
+  });
 
   // Tell the inspector what is selected, and when the repository may have changed (including
   // refreshes that leave the generation alone, which matter for the index and worktree).
@@ -72,6 +108,9 @@
       case "open":
         detailsPanel?.openFocused();
         return;
+      case "menu":
+        graphView?.openMenu();
+        return;
       case "focus":
         if (command.pane === "files") void focusFileList();
         else focus();
@@ -112,7 +151,12 @@
   <div class="workspace">
     <!-- The graph stays laid out under an open diff, so closing the diff finds it unchanged. -->
     <div class="graph-layer" inert={tab.inspector.diff !== null}>
-      <GraphView bind:this={graphView} view={tab.view} onactivate={() => (tab.detailsOpen = true)} />
+      <GraphView
+        bind:this={graphView}
+        view={tab.view}
+        onactivate={() => (tab.detailsOpen = true)}
+        onmenu={openMenu}
+      />
     </div>
     {#if tab.inspector.diff}
       <div class="diff-layer">
@@ -130,6 +174,9 @@
       onopen={openFile}
       onclose={() => (tab.detailsOpen = false)}
     />
+  {/if}
+  {#if menu}
+    <ContextMenu x={menu.x} y={menu.y} entries={menu.entries} onpick={(action) => void perform(tab, action)} onclose={closeMenu} />
   {/if}
 </div>
 

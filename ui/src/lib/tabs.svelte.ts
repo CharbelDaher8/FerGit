@@ -1,6 +1,7 @@
 import type { RepoInfo, SessionId } from "./bindings";
 import type { RepoClient } from "./client";
 import { Inspector } from "./inspector.svelte";
+import { Operations } from "./operations.svelte";
 import type { SavedTabs } from "./settings.svelte";
 import { RepoView } from "./view.svelte";
 
@@ -19,14 +20,15 @@ export interface TabsMemory {
 
 /**
  * One open repository: its rows, scroll position and selection (the view), what is shown about the
- * selection (the inspector), and whether the details panel is open. All of it stays as it is while
- * other tabs are in front.
+ * selection (the inspector), the operations running on it, and whether the details panel is open.
+ * All of it stays as it is while other tabs are in front.
  */
 export class Tab {
   readonly session: SessionId;
   readonly client: RepoClient;
   readonly view: RepoView;
   readonly inspector: Inspector;
+  readonly operations: Operations;
   #info = $state.raw<RepoInfo>() as RepoInfo;
   /**
    * Counts refresh results and change events taken in, including those that leave the generation
@@ -43,6 +45,7 @@ export class Tab {
     this.#info = info;
     this.view = new RepoView(info, client);
     this.inspector = new Inspector(client);
+    this.operations = new Operations(client, (info) => this.adopt(info));
   }
 
   /** As of the newest open, refresh or change event. */
@@ -182,6 +185,11 @@ export class Tabs {
   /** Routes a change event to the tab of `session`; events for closed sessions are dropped. */
   adopt(session: SessionId, info: RepoInfo): void {
     this.#tabs.find((tab) => tab.session === session)?.adopt(info);
+  }
+
+  /** Routes an operation's progress line to the tab of `session`. */
+  progress(session: SessionId, id: string, text: string): void {
+    this.#tabs.find((tab) => tab.session === session)?.operations.progress(id, text);
   }
 
   #add(opened: { session: SessionId; info: RepoInfo }): Tab {

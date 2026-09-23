@@ -4,6 +4,8 @@
 //! Commands are thin: they move work off the async runtime and translate errors. Anything that
 //! knows about git or the graph belongs in fergit-core.
 
+mod operations;
+
 use std::path::Path;
 use std::sync::Arc;
 
@@ -12,7 +14,7 @@ use fergit_core::session::{Session, Sessions};
 use fergit_core::{CommitDetails, DiffSide, FileChange, FileDiff, Oid, RepoInfo, RowLocation, RowsPage, SessionId};
 use serde::Serialize;
 use specta_typescript::Typescript;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 use tauri_specta::{Builder, ErrorHandlingMode, Event, collect_commands, collect_events};
 
 /// The error every command rejects with. The UI shows `message`; `kind` only picks wording.
@@ -195,9 +197,12 @@ fn specta_builder() -> Builder<tauri::Wry> {
             locate,
             commit_details,
             changes,
-            file_diff
+            file_diff,
+            operations::run_operation,
+            operations::answer_prompt,
+            operations::undoable,
         ])
-        .events(collect_events![RepoChanged])
+        .events(collect_events![RepoChanged, operations::OpProgress, operations::CredentialPrompt])
         .error_handling(ErrorHandlingMode::Throw)
 }
 
@@ -225,6 +230,7 @@ pub fn run() {
         .invoke_handler(builder.invoke_handler())
         .setup(move |app| {
             builder.mount_events(app);
+            app.manage(operations::Operations::new(app.handle()));
             Ok(())
         })
         .run(tauri::generate_context!())

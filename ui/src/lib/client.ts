@@ -4,11 +4,15 @@ import {
   type DiffSide,
   type FileChange,
   type FileDiff,
+  type OpId,
+  type OpOutcome,
   type Oid,
+  type Operation,
   type RepoInfo,
   type RowLocation,
   type RowsPage,
   type SessionId,
+  type Undoable,
 } from "./bindings";
 
 /**
@@ -22,6 +26,10 @@ export interface RepoClient {
   commitDetails(id: Oid): Promise<CommitDetails | null>;
   changes(from: DiffSide | null, to: DiffSide): Promise<FileChange[]>;
   fileDiff(from: DiffSide | null, to: DiffSide, path: string, oldPath: string | null): Promise<FileDiff>;
+  /** Runs `op` as request `id`; progress arrives as `opProgress` events naming this session. */
+  runOperation(id: OpId, op: Operation): Promise<OpOutcome>;
+  /** What undo would restore now in this repository. */
+  undoable(): Promise<Undoable>;
   /**
    * Closes the session. From then on the client drops requests, and answers still on their way:
    * their promises never settle, so nothing acts on a closed tab and a request that raced the close
@@ -46,6 +54,8 @@ export function repoClient(session: SessionId): RepoClient {
     commitDetails: (id) => call(() => commands.commitDetails(session, id)),
     changes: (from, to) => call(() => commands.changes(session, from, to)),
     fileDiff: (from, to, path, oldPath) => call(() => commands.fileDiff(session, from, to, path, oldPath)),
+    runOperation: (id, op) => call(() => commands.runOperation(session, id, op)),
+    undoable: () => call(() => commands.undoable(session)),
     close: async () => {
       if (closed) return;
       closed = true;

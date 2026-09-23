@@ -4,7 +4,7 @@ import { formatLocalTime, formatSignatureTime, shortId, upstreamSuffix, upstream
 
 const tracking = (ahead: number, behind: number): Upstream => ({
   name: "origin/main",
-  state: { kind: "tracking", ahead, behind },
+  state: { kind: "tracking", ahead, behind, id: "0".repeat(40) },
 });
 const gone: Upstream = { name: "origin/main", state: { kind: "gone" } };
 
