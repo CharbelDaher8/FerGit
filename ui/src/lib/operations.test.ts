@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpOutcome, Operation, RepoInfo } from "./bindings";
-import { planFor } from "./actions";
+import { planFor, undoDialog } from "./actions";
 import { Dialogs, canConfirm, initialValues } from "./dialogs.svelte";
 import { Operations } from "./operations.svelte";
 
@@ -20,6 +20,7 @@ vi.mock("./bindings", () => ({
   events: {},
 }));
 
+const TIP = "d".repeat(40);
 const INFO: RepoInfo = { root: "/r", name: "r", generation: 7, rowCount: 3, head: null, branch: "main", state: { kind: "clean" } };
 const FETCH: Operation = { kind: "fetch", remote: null, prune: true };
 const ID = "c".repeat(40);
@@ -117,6 +118,31 @@ describe("planFor", () => {
     expect(plan.build({}).op).toMatchObject({ force: { kind: "withLease", expected: ID } });
   });
 
+  it("merges in the mode chosen, fast-forwarding by default", () => {
+    const from = { kind: "ref" as const, name: "refs/heads/topic" };
+    const plan = planFor({ kind: "merge", from, name: "topic", into: "main" });
+    expect(initialValues(plan.dialog!)).toEqual({ mode: "ff" });
+    expect(plan.build({ mode: "squash" }).op).toEqual({ kind: "merge", from, mode: "squash" });
+  });
+
+  it("confirms a hard reset a second time, and resets only from the tip that was seen", () => {
+    const plan = planFor({ kind: "reset", branch: "main", to: ID, expected: TIP });
+    expect(initialValues(plan.dialog!)).toEqual({ mode: "mixed" });
+    expect(plan.confirm!({ mode: "mixed" })).toBeNull();
+    const hard = plan.confirm!({ mode: "hard" });
+    expect(hard?.danger).toBe(true);
+    expect(hard?.message).toContain("never stored them");
+    expect(plan.build({ mode: "hard" }).op).toEqual({ kind: "reset", branch: "main", to: ID, mode: "hard", expected: TIP });
+  });
+
+  it("asks before dropping a stash or aborting, but not before continuing", () => {
+    expect(planFor({ kind: "stashDrop", index: 1, id: ID, name: "stash@{1}" }).dialog?.danger).toBe(true);
+    expect(planFor({ kind: "abort" }).dialog?.danger).toBe(true);
+    expect(planFor({ kind: "continue" }).dialog).toBeNull();
+    const stash = planFor({ kind: "stashPush" });
+    expect(stash.build({ message: " wip ", untracked: true }).op).toEqual({ kind: "stashPush", message: "wip", untracked: true });
+  });
+
   it("builds branches and tags from what was entered", () => {
     const branch = planFor({ kind: "createBranch", at: ID }).build({ name: " topic ", checkout: false });
     expect(branch.op).toEqual({ kind: "createBranch", name: "topic", at: ID, checkout: false, upstream: null });
@@ -134,5 +160,35 @@ describe("planFor", () => {
       checkout: true,
       upstream: "refs/remotes/origin/x",
     });
+  });
+});
+
+describe("undoDialog", () => {
+  const reset: Operation = { kind: "reset", branch: "main", to: ID, mode: "hard", expected: TIP };
+
+  it("says what goes back, and what can't", () => {
+    const dialog = undoDialog({
+      kind: "ready",
+      entry: "op-1",
+      operation: reset,
+      startedAtMs: 0,
+      changes: [
+        { name: "refs/heads/main", before: TIP, after: ID },
+        { name: "refs/tags/v1", before: null, after: ID },
+      ],
+      head: null,
+    });
+    expect(dialog.title).toBe("Undo the hard reset of main to cccccccc?");
+    expect(dialog.message).toContain("main goes back from cccccccc to dddddddd.");
+    expect(dialog.message).toContain("tag v1 is deleted again.");
+    expect(dialog.message).toContain("never stored them");
+    expect(dialog.message).toContain("already pushed stays on the remote");
+    expect(dialog.cancel).toBeUndefined();
+  });
+
+  it("only informs when nothing can be undone", () => {
+    const blocked = undoDialog({ kind: "blocked", operation: { kind: "pull" }, reason: "A push can't be undone." });
+    expect(blocked).toMatchObject({ title: "Can't undo the pull", message: "A push can't be undone.", cancel: null });
+    expect(undoDialog({ kind: "nothing" }).cancel).toBeNull();
   });
 });

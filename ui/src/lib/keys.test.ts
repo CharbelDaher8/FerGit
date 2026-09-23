@@ -230,6 +230,13 @@ describe("keymaps", () => {
     expect(press("q")).toEqual({ command: null, handled: false });
   });
 
+  it("u undoes from the graph and the file list, but not in a diff", () => {
+    expect(keyboard("graph").type("3", "u")).toEqual([{ kind: "undo" }]);
+    expect(keyboard("files").type("u")).toEqual([{ kind: "undo" }]);
+    expect(keyboard("diff").press("u")).toEqual({ command: null, handled: false });
+    expect(keyboard("graph").press("u", { ctrl: true }).command).toEqual({ kind: "page", by: -0.5 });
+  });
+
   it("files: j/k move, gg/G go to the ends, l and Enter open, h goes back to the graph", () => {
     const { type } = keyboard("files");
     expect(type("j", "k", "g", "g", "G")).toEqual([

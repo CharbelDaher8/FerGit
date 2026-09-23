@@ -33,6 +33,8 @@ export type Command =
   | { kind: "close" }
   /** Show or hide the keyboard help. */
   | { kind: "help" }
+  /** Undo the last operation (the app asks first). */
+  | { kind: "undo" }
   /** Esc with nothing pending: close what is open, innermost first. */
   | { kind: "escape" };
 
@@ -67,8 +69,9 @@ const run = (command: Command): KeyResult => ({ command, handled: true });
  *
  * Keymap per context:
  * - graph: j/k and ↓/↑ move, gg/G/Home/End go to an end, {n}G/{n}gg to row n, Ctrl+d/u/f/b and
- *   PageDown/PageUp page, l/Enter focus the file list, h does nothing (leftmost pane);
- * - files: j/k and ↓/↑ move, gg/G/Home/End go to an end, l/Enter open, h focuses the graph;
+ *   PageDown/PageUp page, l/Enter focus the file list, h does nothing (leftmost pane), u undoes;
+ * - files: j/k and ↓/↑ move, gg/G/Home/End go to an end, l/Enter open, h focuses the graph, u
+ *   undoes;
  * - diff: j/k scroll lines, Ctrl+d/u/f/b page, gg/G go to an end, h/l scroll sideways, 0/$ go to
  *   a line edge, q closes; arrows and other keys keep their native scrolling;
  * - help and other: only `?` and Esc.
@@ -183,6 +186,10 @@ export class KeyInterpreter {
         case "h":
           this.#clear();
           return context === "files" ? run({ kind: "focus", pane: "graph" }) : CONSUMED;
+        case "u":
+          // Like vim's undo. A count means nothing: one undo at a time, each confirmed.
+          this.#clear();
+          return run({ kind: "undo" });
       }
       if (context === "graph" && (key === "PageDown" || key === "PageUp")) {
         return run({ kind: "page", by: (key === "PageDown" ? 1 : -1) * this.#takeCount(1) });

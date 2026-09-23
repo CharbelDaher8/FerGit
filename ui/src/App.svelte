@@ -12,20 +12,36 @@
   import { Inspector, subjectOf, type FileList } from "./lib/inspector.svelte";
   import KeyHelp from "./lib/KeyHelp.svelte";
   import { KeyInterpreter, PENDING_G_TIMEOUT_MS, type Command, type KeyContext } from "./lib/keys";
-  import { menuFor, type MenuEntry, type MenuRequest } from "./lib/menu";
+  import { menuFor, type MenuContext, type MenuEntry, type MenuRequest } from "./lib/menu";
   import OperationStatus from "./lib/OperationStatus.svelte";
   import { session } from "./lib/session.svelte";
   import { settings } from "./lib/settings.svelte";
+  import StateBanner from "./lib/StateBanner.svelte";
 
   let detailsOpen = $state(true);
   /** The open context menu; where focus was before it opened goes back there when it closes. */
   let menu = $state.raw<{ x: number; y: number; entries: MenuEntry[]; returnFocus: HTMLElement | null } | null>(null);
 
   function openMenu({ row, ref, x, y }: MenuRequest): void {
-    const entries = menuFor(row, ref);
+    const entries = menuFor(row, ref, menuContext());
     if (entries.length === 0) return;
     const returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     menu = { x, y, entries, returnFocus };
+  }
+
+  /** What the menu needs to know about the repository: the current branch, and what is going on. */
+  function menuContext(): MenuContext {
+    const info = session.info;
+    const view = session.view;
+    const comparison = view?.comparison;
+    const [older, newer] = comparison ? [view!.row(comparison.older), view!.row(comparison.newer)] : [];
+    const commits = older?.kind === "commit" && newer?.kind === "commit";
+    return {
+      branch: info?.branch ?? null,
+      head: info?.head ?? null,
+      busy: (info?.state.kind ?? "clean") !== "clean",
+      compared: commits ? { older: older.id, newer: newer.id } : null,
+    };
   }
 
   function closeMenu(): void {
@@ -143,6 +159,9 @@
       case "help":
         helpOpen = !helpOpen;
         return;
+      case "undo":
+        if (view) void perform({ kind: "undo" });
+        return;
       case "close":
         closeDiff();
         return;
@@ -237,6 +256,13 @@
       </button>
       <button
         class="button"
+        onclick={() => void perform({ kind: "undo" })}
+        title="Undo the last operation made here from FerGit, after saying what it restores (u)"
+      >
+        Undo
+      </button>
+      <button
+        class="button"
         onclick={() => session.refresh()}
         disabled={session.refreshing}
         title="Re-read the repository"
@@ -262,6 +288,14 @@
         onclick={() => session.dismissError()}>×</button
       >
     </div>
+  {/if}
+
+  {#if session.info && session.view}
+    <StateBanner
+      repoState={session.info.state}
+      busy={operations.active.length > 0}
+      onaction={(kind) => void perform({ kind })}
+    />
   {/if}
 
   <OperationStatus {operations} />

@@ -25,6 +25,7 @@
         ["l  Enter", "Into the file list"],
         ["Ctrl+click", "Compare with the selected commit"],
         ["Shift+F10  Menu", "Actions for the selected commit (or right-click a commit or label)"],
+        ["u", "Undo the last operation, after saying what it restores (in the file list too)"],
       ],
     },
     {

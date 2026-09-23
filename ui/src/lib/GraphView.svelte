@@ -211,7 +211,8 @@
     const index = rowAt(event.clientY);
     const row = index === null ? undefined : view.row(index);
     if (index === null || !row) return;
-    view.select(index);
+    // Right-clicking one of the two compared rows keeps comparing, so the menu can act on both.
+    if (index !== view.selected && index !== view.compared) view.select(index);
     const badge = event.target instanceof Element ? event.target.closest<HTMLElement>("[data-ref]") : null;
     const ref = badge ? (row.refs[Number(badge.dataset.ref)] ?? null) : null;
     onmenu({ row, ref, x: event.clientX, y: event.clientY });
