@@ -237,7 +237,9 @@ event repo_changed { repo, generation, row_count }
   - Hooks run only on operations the user starts, as with git itself.
 - **Authentication.**
   - FerGit never stores credentials. It uses git credential helpers (Git Credential Manager on Windows) and ssh-agent.
-  - Password prompts appear in our `GIT_ASKPASS` dialog.
+  - Password prompts appear in our `GIT_ASKPASS` dialog. FerGit's own executable is the helper; it relays each prompt to the app over loopback TCP, guarded by a per-run 128-bit token.
+  - Git Credential Manager runs with `GCM_INTERACTIVE=never`: it can still supply stored credentials, but it can't open its own sign-in windows. Any `GIT_ASKPASS`/`SSH_ASKPASS` inherited from the environment is dropped. The trade-off is no browser OAuth sign-in from FerGit; use a token in the dialog instead.
+  - The journal lives at `<app local data dir>/journal.jsonl`, one file for all repositories. Each entry records the repository's root.
   - Tokens and `https://user:token@` URLs are scrubbed before anything is journaled.
 - **SSO, MQTT, certificates.**
   - A local app needs none of these.
