@@ -31,6 +31,24 @@ describe("Settings", () => {
     expect(new Settings(storage).showRelations).toBe(false);
   });
 
+  it("follows the OS theme by default, and reads a stored theme", () => {
+    expect(new Settings(null).themeMode).toBe("system");
+    expect(new Settings(memoryStorage()).themeMode).toBe("system");
+    expect(new Settings(memoryStorage({ "fergit.theme": "dark" })).themeMode).toBe("dark");
+    expect(new Settings(memoryStorage({ "fergit.theme": "light" })).themeMode).toBe("light");
+    expect(new Settings(memoryStorage({ "fergit.theme": "neon" })).themeMode).toBe("system");
+  });
+
+  it("persists the theme, and a new instance reads it back", () => {
+    const storage = memoryStorage();
+    const settings = new Settings(storage);
+    settings.themeMode = "dark";
+    expect(storage.setItem).toHaveBeenCalledWith("fergit.theme", "dark");
+    expect(new Settings(storage).themeMode).toBe("dark");
+    settings.themeMode = "system";
+    expect(new Settings(storage).themeMode).toBe("system");
+  });
+
   it("keeps working when storage throws", () => {
     const broken: SettingsStorage = {
       getItem: () => {
@@ -44,6 +62,9 @@ describe("Settings", () => {
     expect(settings.showRelations).toBe(true);
     settings.showRelations = false;
     expect(settings.showRelations).toBe(false);
+    expect(settings.themeMode).toBe("system");
+    settings.themeMode = "light";
+    expect(settings.themeMode).toBe("light");
   });
 });
 

@@ -9,20 +9,19 @@
   import type { Row } from "./bindings";
   import { formatLocalTime, shortId, upstreamSuffix, upstreamTitle } from "./format";
   import {
-    DARK_PALETTE,
     LABEL_FONT,
-    LIGHT_PALETTE,
     ROW_HEIGHT,
     drawGraph,
     graphWidth,
     nextColumnWidth,
-    paletteColor,
+    laneToken,
+    readLanePalette,
     rowGraphWidth,
     scrollMap,
     type ColumnWidth,
     type GraphScene,
   } from "./graph";
-  import { settings } from "./settings.svelte";
+  import { settings, theme } from "./settings.svelte";
   import { rowWindow, type RepoView } from "./view.svelte";
 
   interface Props {
@@ -46,7 +45,6 @@
   let viewHeight = $state(0);
   let viewWidth = $state(0);
   let scrollbarWidth = $state(0);
-  let dark = $state(false);
 
   const total = $derived(view.total);
   const map = $derived(scrollMap(total, viewHeight));
@@ -59,7 +57,6 @@
   const first = $derived(span.first);
   const end = $derived(span.end);
   const indices = $derived(Array.from({ length: end - first }, (_, k) => first + k));
-  const palette = $derived(dark ? DARK_PALETTE : LIGHT_PALETTE);
   const comparison = $derived(view.comparison);
 
   // Label widths, measured once per distinct text in the label font.
@@ -122,10 +119,12 @@
     offset: 0,
     width: 0,
     height: 0,
-    palette: LIGHT_PALETTE,
+    palette: [],
     labels: true,
   };
   let frame = 0;
+  /** The theme `scene.palette` was read for. It's read at paint time, once the page shows it. */
+  let paletteTheme: string | null = null;
 
   $effect(() => {
     sceneRows.length = 0;
@@ -134,8 +133,8 @@
     scene.offset = viewOffset;
     scene.width = graphPx;
     scene.height = viewHeight;
-    scene.palette = palette;
     scene.labels = settings.showRelations;
+    void theme.theme; // repaint when it changes
     schedulePaint();
   });
 
@@ -153,6 +152,10 @@
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
     ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+    if (paletteTheme !== theme.theme) {
+      scene.palette = readLanePalette(getComputedStyle(document.documentElement));
+      paletteTheme = theme.theme;
+    }
     drawGraph(ctx, scene);
   }
 
@@ -166,14 +169,8 @@
     observer.observe(scroller);
     measure();
 
-    const scheme = matchMedia("(prefers-color-scheme: dark)");
-    const onScheme = () => (dark = scheme.matches);
-    onScheme();
-    scheme.addEventListener("change", onScheme);
-
     return () => {
       observer.disconnect();
-      scheme.removeEventListener("change", onScheme);
       cancelAnimationFrame(frame);
     };
   });
@@ -231,7 +228,7 @@
             role="option"
             aria-selected={i === view.selected}
             style:transform="translateY({i * ROW_HEIGHT + shift}px)"
-            style:--lane={row ? paletteColor(palette, row.graph.color) : undefined}
+            style:--lane={row ? `var(${laneToken(row.graph.color)})` : undefined}
           >
             <span></span>
             {#if row}

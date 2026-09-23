@@ -34,6 +34,8 @@ export type Command =
   | { kind: "close" }
   /** Show or hide the keyboard help. */
   | { kind: "help" }
+  /** Switch to the next theme mode (system, light, dark). */
+  | { kind: "theme" }
   /** Esc with nothing pending: close what is open, innermost first. */
   | { kind: "escape" }
   /** Open a repository in a new tab. */
@@ -81,8 +83,8 @@ const run = (command: Command): KeyResult => ({ command, handled: true });
  * - files: j/k and ↓/↑ move, gg/G/Home/End go to an end, l/Enter open, h focuses the graph;
  * - diff: j/k scroll lines, Ctrl+d/u/f/b page, gg/G go to an end, h/l scroll sideways, 0/$ go to
  *   a line edge, q closes; arrows and other keys keep their native scrolling;
- * - help and other: only `?` and Esc.
- * `?` toggles the help everywhere.
+ * - help and other: only `?`, `T` and Esc.
+ * `?` toggles the help and `T` cycles the theme everywhere.
  */
 export class KeyInterpreter {
   #count = "";
@@ -118,9 +120,9 @@ export class KeyInterpreter {
     }
 
     if (context === "help" || context === "other") {
-      if (key !== "?" || input.ctrlKey) return IGNORED;
+      if (input.ctrlKey || (key !== "?" && key !== "T")) return IGNORED;
       this.#clear();
-      return run({ kind: "help" });
+      return run({ kind: key === "?" ? "help" : "theme" });
     }
 
     if (input.ctrlKey) {
@@ -154,6 +156,9 @@ export class KeyInterpreter {
       case "?":
         this.#clear();
         return run({ kind: "help" });
+      case "T":
+        this.#clear();
+        return run({ kind: "theme" });
       case "G": {
         const count = this.#takeCount(null);
         return run({ kind: "goto", row: count === null ? "last" : count - 1 });

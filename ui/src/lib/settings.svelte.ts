@@ -1,3 +1,5 @@
+import { DARK_SCHEME_QUERY, THEME_STORAGE_KEY, ThemeState, parseThemeMode, type ThemeMode } from "./theme.svelte";
+
 /** Where settings persist: `localStorage` in the app, a stand-in in tests. */
 export type SettingsStorage = Pick<Storage, "getItem" | "setItem">;
 
@@ -23,12 +25,14 @@ export class Settings {
   readonly #storage: SettingsStorage | null;
   #showRelations = $state(true);
   #tabs = $state.raw<SavedTabs>(NO_TABS);
+  #themeMode = $state<ThemeMode>("system");
 
   constructor(storage: SettingsStorage | null) {
     this.#storage = storage;
     const stored = read(storage, SHOW_RELATIONS_KEY);
     if (stored !== null) this.#showRelations = stored !== "false";
     this.#tabs = parseTabs(read(storage, TABS_KEY));
+    this.#themeMode = parseThemeMode(read(storage, THEME_STORAGE_KEY));
   }
 
   /** Whether branch relationship labels are drawn on graph lines. On by default. */
@@ -41,6 +45,15 @@ export class Settings {
     write(this.#storage, SHOW_RELATIONS_KEY, String(value));
   }
 
+  /** Light, dark, or whatever the OS prefers (the default). */
+  get themeMode(): ThemeMode {
+    return this.#themeMode;
+  }
+
+  set themeMode(value: ThemeMode) {
+    this.#themeMode = value;
+    write(this.#storage, THEME_STORAGE_KEY, value);
+  }
   /** The open tabs, as last saved. None by default. */
   get tabs(): SavedTabs {
     return this.#tabs;
@@ -98,4 +111,10 @@ function browserStorage(): SettingsStorage | null {
   }
 }
 
+function darkSchemeQuery(): MediaQueryList | null {
+  return typeof globalThis.matchMedia === "function" ? globalThis.matchMedia(DARK_SCHEME_QUERY) : null;
+}
+
 export const settings = new Settings(browserStorage());
+/** The theme shown, from `settings.themeMode` and the OS preference. */
+export const theme = new ThemeState(settings, darkSchemeQuery());

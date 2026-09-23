@@ -211,6 +211,24 @@ describe("Esc and ?", () => {
     expect(keyboard("other").press("j")).toEqual({ command: null, handled: false });
     expect(keyboard("other").press("Enter")).toEqual({ command: null, handled: false });
   });
+
+  it("switches the theme from anywhere with T, but not with t, Ctrl+T or in a text field", () => {
+    for (const context of ["graph", "files", "diff", "help", "other"] as const) {
+      expect(keyboard(context).press("T")).toEqual({ command: { kind: "theme" }, handled: true });
+      expect(keyboard(context).press("t").command).toBeNull();
+      expect(keyboard(context).press("T", { ctrl: true }).command).not.toEqual({ kind: "theme" });
+      expect(keyboard(context).press("T", { editable: true }).command).toBeNull();
+    }
+  });
+
+  it("drops a half-typed count or g on T", () => {
+    const { interpreter, press, type } = keyboard();
+    press("5");
+    press("g");
+    expect(type("T")).toEqual([{ kind: "theme" }]);
+    expect(interpreter.pending).toBe("");
+    expect(type("j")).toEqual([{ kind: "move", by: 1 }]);
+  });
 });
 
 describe("keymaps", () => {
