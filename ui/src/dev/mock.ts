@@ -6,7 +6,7 @@ import { mockIPC } from "@tauri-apps/api/mocks";
 import { mount } from "svelte";
 import App from "../App.svelte";
 import "../app.css";
-import type { Edge, RefLabel, Relation, RepoInfo, Row, RowsPage, Upstream } from "../lib/bindings";
+import type { Edge, OpOutcome, Operation, RefLabel, Relation, RepoInfo, Row, RowsPage, Upstream } from "../lib/bindings";
 import { session } from "../lib/session.svelte";
 
 const up = (from: number, to: number, color: number): Edge => ({ half: "upper", from, to, color });
@@ -170,6 +170,23 @@ mockIPC((command, payload) => {
     }
     case "changes":
       return [];
+    case "run_operation": {
+      // Pushes are rejected, to show how failures look; everything else succeeds after a moment.
+      const op = args.operation as Operation;
+      const outcome: OpOutcome =
+        op.kind === "push"
+          ? {
+              kind: "failed",
+              info,
+              error: {
+                kind: "rejected",
+                message: `origin has commits on ${op.branch} that you don't have. Pull or fetch and integrate them first, or force-push with lease to replace them.`,
+                output: `To https://example.com/repo.git\n!\trefs/heads/${op.branch}:refs/heads/${op.branch}\t[rejected] (fetch first)\nDone`,
+              },
+            }
+          : { kind: "done", info };
+      return new Promise((resolve) => setTimeout(() => resolve(outcome), 800));
+    }
     case "plugin:event|listen":
       return 1;
     default:

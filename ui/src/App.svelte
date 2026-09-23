@@ -1,17 +1,41 @@
 <script lang="ts">
   import { open } from "@tauri-apps/plugin-dialog";
   import { tick, untrack } from "svelte";
+  import { followCredentialPrompts, operations, perform } from "./lib/actions";
   import type { FileChange } from "./lib/bindings";
+  import ContextMenu from "./lib/ContextMenu.svelte";
   import DetailsPanel from "./lib/DetailsPanel.svelte";
+  import Dialog from "./lib/Dialog.svelte";
+  import { dialogs } from "./lib/dialogs.svelte";
   import DiffView from "./lib/DiffView.svelte";
   import GraphView from "./lib/GraphView.svelte";
   import { Inspector, subjectOf, type FileList } from "./lib/inspector.svelte";
   import KeyHelp from "./lib/KeyHelp.svelte";
   import { KeyInterpreter, PENDING_G_TIMEOUT_MS, type Command, type KeyContext } from "./lib/keys";
+  import { menuFor, type MenuEntry, type MenuRequest } from "./lib/menu";
+  import OperationStatus from "./lib/OperationStatus.svelte";
   import { session } from "./lib/session.svelte";
   import { settings } from "./lib/settings.svelte";
 
   let detailsOpen = $state(true);
+  /** The open context menu; where focus was before it opened goes back there when it closes. */
+  let menu = $state.raw<{ x: number; y: number; entries: MenuEntry[]; returnFocus: HTMLElement | null } | null>(null);
+
+  function openMenu({ row, ref, x, y }: MenuRequest): void {
+    const entries = menuFor(row, ref);
+    if (entries.length === 0) return;
+    const returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    menu = { x, y, entries, returnFocus };
+  }
+
+  function closeMenu(): void {
+    menu?.returnFocus?.focus({ preventScroll: true });
+    menu = null;
+  }
+
+  // Report operations' progress, and ask for the credentials git needs, for as long as the app runs.
+  $effect(() => operations.followProgress());
+  $effect(() => followCredentialPrompts());
   const inspector = new Inspector();
   /** Where focus was when a diff opened; it goes back there when the diff closes. */
   let focusBeforeDiff: HTMLElement | null = null;
@@ -54,6 +78,11 @@
   function onkeydown(event: KeyboardEvent): void {
     if (event.defaultPrevented) return;
     const context = keyContext(event.target);
+    // The keyboard's menu key, or Shift+F10, opens the selected commit's context menu.
+    if (context === "graph" && (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10"))) {
+      if (graphView?.openMenu()) event.preventDefault();
+      return;
+    }
     const result = keys.press(
       {
         key: event.key,
@@ -90,7 +119,7 @@
       const control = element.closest("button, a, input, select, textarea");
       return control && !control.matches("button.file") ? "other" : "files";
     }
-    if (element?.closest(".topbar, .banner, .empty")) return "other";
+    if (element?.closest(".topbar, .banner, .empty, .failure")) return "other";
     return inspector.diff ? "diff" : "graph";
   }
 
@@ -201,6 +230,13 @@
       </label>
       <button
         class="button"
+        onclick={() => void perform({ kind: "fetch", remote: null })}
+        title="Fetch every remote, removing remote branches that were deleted there"
+      >
+        Fetch
+      </button>
+      <button
+        class="button"
         onclick={() => session.refresh()}
         disabled={session.refreshing}
         title="Re-read the repository"
@@ -228,12 +264,19 @@
     </div>
   {/if}
 
+  <OperationStatus {operations} />
+
   <main class="main">
     {#if session.view}
       <div class="workspace">
         <!-- The graph stays laid out under an open diff, so closing the diff finds it unchanged. -->
         <div class="graph-layer" inert={inspector.diff !== null}>
-          <GraphView bind:this={graphView} view={session.view} onactivate={() => (detailsOpen = true)} />
+          <GraphView
+            bind:this={graphView}
+            view={session.view}
+            onactivate={() => (detailsOpen = true)}
+            onmenu={openMenu}
+          />
         </div>
         {#if inspector.diff}
           <div class="diff-layer">
@@ -266,6 +309,14 @@
   {/if}
   {#if helpOpen}
     <KeyHelp onclose={() => (helpOpen = false)} />
+  {/if}
+  {#if menu}
+    <ContextMenu x={menu.x} y={menu.y} entries={menu.entries} onpick={(action) => void perform(action)} onclose={closeMenu} />
+  {/if}
+  {#if dialogs.current}
+    {#key dialogs.current}
+      <Dialog spec={dialogs.current.spec} onclose={(values) => dialogs.close(values)} />
+    {/key}
   {/if}
 </div>
 

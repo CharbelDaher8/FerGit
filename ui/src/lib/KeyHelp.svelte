@@ -24,6 +24,7 @@
         ["Ctrl+f  Ctrl+b", "A page down / up (PgDn PgUp too)"],
         ["l  Enter", "Into the file list"],
         ["Ctrl+click", "Compare with the selected commit"],
+        ["Shift+F10  Menu", "Actions for the selected commit (or right-click a commit or label)"],
       ],
     },
     {

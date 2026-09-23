@@ -21,6 +21,14 @@ export type MenuAction =
 
 export type MenuEntry = { label: string; action: MenuAction; danger?: boolean } | { separator: true };
 
+/** A request for the context menu of `row`, or of its label `ref`, at a point on screen. */
+export interface MenuRequest {
+  row: Row;
+  ref: RefLabel | null;
+  x: number;
+  y: number;
+}
+
 const SEPARATOR: MenuEntry = { separator: true };
 
 /**
