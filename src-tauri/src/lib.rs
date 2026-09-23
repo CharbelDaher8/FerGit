@@ -3,6 +3,8 @@
 //! Commands are thin: they move work off the async runtime and translate errors. Anything that
 //! knows about git or the graph belongs in fergit-core.
 
+mod operations;
+
 use std::path::Path;
 use std::sync::{Arc, PoisonError, RwLock};
 
@@ -11,7 +13,7 @@ use fergit_core::session::Session;
 use fergit_core::{CommitDetails, DiffSide, FileChange, FileDiff, Oid, RepoInfo, RowLocation, RowsPage};
 use serde::Serialize;
 use specta_typescript::Typescript;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 use tauri_specta::{Builder, ErrorHandlingMode, Event, collect_commands, collect_events};
 
 /// The error every command rejects with. The UI shows `message`; `kind` only picks wording.
@@ -163,8 +165,18 @@ async fn file_diff(
 
 fn specta_builder() -> Builder<tauri::Wry> {
     Builder::<tauri::Wry>::new()
-        .commands(collect_commands![open_repo, refresh, rows, locate, commit_details, changes, file_diff])
-        .events(collect_events![RepoChanged])
+        .commands(collect_commands![
+            open_repo,
+            refresh,
+            rows,
+            locate,
+            commit_details,
+            changes,
+            file_diff,
+            operations::run_operation,
+            operations::answer_prompt,
+        ])
+        .events(collect_events![RepoChanged, operations::OpProgress, operations::CredentialPrompt])
         .error_handling(ErrorHandlingMode::Throw)
 }
 
@@ -192,6 +204,7 @@ pub fn run() {
         .invoke_handler(builder.invoke_handler())
         .setup(move |app| {
             builder.mount_events(app);
+            app.manage(operations::Operations::new(app.handle()));
             Ok(())
         })
         .run(tauri::generate_context!())

@@ -15,7 +15,7 @@ const through = (lane: number, color: number): Edge[] => [up(lane, lane, color),
 
 const tracking = (name: string, ahead: number, behind: number): Upstream => ({
   name,
-  state: { kind: "tracking", ahead, behind },
+  state: { kind: "tracking", ahead, behind, id: "0".repeat(40) },
 });
 const local = (name: string, upstream: Upstream | null = null, isHead = false): RefLabel => ({
   kind: "localBranch",

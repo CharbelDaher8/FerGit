@@ -60,10 +60,23 @@ export const commands = {
  *  untracked files that aren't ignored.
  */
 { kind: "worktree" } | null, to: DiffSide, path: string, oldPath: string | null) => __TAURI_INVOKE<FileDiff>("file_diff", { from, to, path, oldPath }),
+	/**
+	 *  Runs `operation` on the open repository. `id` identifies this request: running an id that
+	 *  already ran returns that run's outcome instead of running again. Failures of the operation
+	 *  itself are an outcome, not a rejection; the call rejects only if no repository is open.
+	 */
+	runOperation: (id: OpId, operation: Operation) => __TAURI_INVOKE<OpOutcome>("run_operation", { id, operation }),
+	/**
+	 *  Answers the credential prompt `id`; `null` cancels it, failing the operation that asked.
+	 *  Answering a prompt that timed out or was already answered does nothing.
+	 */
+	answerPrompt: (id: number, answer: string | null) => __TAURI_INVOKE<void>("answer_prompt", { id, answer }),
 };
 
 /** Events */
 export const events = {
+	credentialPrompt: makeEvent<CredentialPrompt>("credential-prompt"),
+	opProgress: makeEvent<OpProgress>("op-progress"),
 	repoChanged: makeEvent<RepoChanged>("repo-changed"),
 };
 
@@ -76,6 +89,12 @@ export type AppError = {
 
 export type ChangeStatus = "added" | "modified" | "deleted" | "renamed" | "copied" | "typeChanged";
 
+export type CheckoutTarget = 
+/**  A local branch, by short name. */
+{ kind: "branch"; name: string } | 
+/**  A commit, detaching HEAD. */
+{ kind: "commit"; id: Oid };
+
 export type CommitDetails = {
 	id: Oid,
 	parents: Oid[],
@@ -85,6 +104,15 @@ export type CommitDetails = {
 	message: string,
 	/**  Files changed relative to the first parent (or the empty tree for a root commit). */
 	files: FileChange[],
+};
+
+/**  Git needs the user to type something. Answer with `answer_prompt(id, …)`. */
+export type CredentialPrompt = {
+	id: number,
+	/**  Git's prompt, e.g. `Password for 'https://me@github.com': `. */
+	text: string,
+	/**  Mask the input: the answer is a password, token or passphrase. */
+	secret: boolean,
 };
 
 export type DiffLine = {
@@ -164,6 +192,17 @@ export type FileDiff =
  */
 { kind: "submodule"; old: Oid | null; new: Oid | null };
 
+/**  Whether a push may replace commits on the remote. There is deliberately no unconditional force. */
+export type ForceMode = 
+/**  Only fast-forward the remote branch. */
+{ kind: "none" } | 
+/**
+ *  Replace the remote branch, but only if it is still at `expected` (`None`: only if it doesn't
+ *  exist), the tip the user was looking at. A remote branch that moved since, because someone
+ *  else pushed, fails the push as [`OpErrorKind::StaleLease`] instead of losing their work.
+ */
+{ kind: "withLease"; expected: Oid | null };
+
 /**
  *  Identifies one snapshot of a repository. Increases every time the visible state changes, and
  *  keeps increasing across repositories opened in the same process, so the UI can discard any
@@ -200,6 +239,106 @@ export type LineKind = "context" | "added" | "removed";
 
 /**  A git object id (SHA-1). Crosses IPC as a 40-character lowercase hex string. */
 export type Oid = string;
+
+/**  Why an operation failed. */
+export type OpError = {
+	kind: OpErrorKind,
+	/**  What went wrong and what to do about it, written for the user. */
+	message: string,
+	/**
+	 *  Git's output (errors first, then anything it printed to stdout), with credentials removed.
+	 *  Empty if git never ran.
+	 */
+	output: string,
+};
+
+export type OpErrorKind = 
+/**
+ *  A name isn't a valid ref name, a remote doesn't exist, or the repository isn't in a state
+ *  the operation applies to (no current branch to pull, say). Git didn't run.
+ */
+"invalidInput" | 
+/**  The branch or tag to create already exists. */
+"alreadyExists" | 
+/**  The branch to delete has commits that would become unreachable; deleting it needs `force`. */
+"notFullyMerged" | 
+/**  Uncommitted changes would be overwritten. */
+"localChanges" | 
+/**
+ *  The remote has commits the local branch lacks (push), or the two diverged (pull), or a hook
+ *  on the remote declined the push.
+ */
+"rejected" | 
+/**  A lease-protected push found the remote branch somewhere other than expected. */
+"staleLease" | 
+/**  The remote wanted credentials that were missing, cancelled or wrong. */
+"authFailed" | 
+/**  Git couldn't be started. */
+"gitNotFound" | 
+/**  Any other failure; `message` has git's own words. */
+"git";
+
+/**
+ *  Identifies one request to run an operation. The UI generates it; running the same id twice runs
+ *  the operation once, so a double click or a retried request can't push twice.
+ */
+export type OpId = string;
+
+/**
+ *  How an operation ended. The repository is re-read either way (a failed fetch may still have
+ *  updated some refs), and `info` describes the snapshot current afterwards.
+ */
+export type OpOutcome = { kind: "done"; info: RepoInfo } | { kind: "failed"; info: RepoInfo; error: OpError };
+
+/**  A line of git's progress for the running operation `id`, e.g. `Receiving objects: 45% (9/20)`. */
+export type OpProgress = {
+	id: OpId,
+	text: string,
+};
+
+/**
+ *  Something the user asked to do to the repository, described by intent rather than as a git
+ *  command line. Names are short ref names as shown on labels (`main`, `v1.0`); they are validated
+ *  before git sees them, and never parsed as options.
+ * 
+ *  Serialized into the operation journal, which outlives the binary: variants and fields may be
+ *  added, but never renamed or removed.
+ */
+export type Operation = 
+/**
+ *  Switch the worktree to a branch, or detach HEAD at a commit. Fails, changing nothing, if
+ *  uncommitted changes would be overwritten.
+ */
+{ kind: "checkout"; target: CheckoutTarget } | 
+/**
+ *  Create a local branch at `at`, optionally switching to it and making it follow `upstream`
+ *  (a full remote-tracking ref name such as `refs/remotes/origin/main`).
+ */
+{ kind: "createBranch"; name: string; at: Oid; checkout: boolean; upstream: string | null } | 
+/**
+ *  Ensure the local branch `name` doesn't exist: deleting one that is already gone succeeds.
+ *  Without `force`, a branch with commits not merged into its upstream (or HEAD) is kept.
+ */
+{ kind: "deleteBranch"; name: string; force: boolean } | 
+/**  Create a tag at `at`: annotated with `message` if there is one, lightweight otherwise. */
+{ kind: "createTag"; name: string; at: Oid; message: string | null } | 
+/**  Ensure the tag `name` doesn't exist: deleting one that is already gone succeeds. */
+{ kind: "deleteTag"; name: string } | 
+/**
+ *  Download from `remote`, or from every remote when `None`, removing remote-tracking branches
+ *  whose remote branch is gone if `prune` is set.
+ */
+{ kind: "fetch"; remote: string | null; prune: boolean } | 
+/**
+ *  Fetch the current branch's upstream and fast-forward the branch to it. Fails, changing no
+ *  branch, if the two have diverged; merging and rebasing are separate operations.
+ */
+{ kind: "pull" } | 
+/**
+ *  Push the local branch `branch` to the branch of the same name on `remote` (the branch's push
+ *  remote when `None`), making it the branch's upstream if `set_upstream`.
+ */
+{ kind: "push"; branch: string; remote: string | null; force: ForceMode; setUpstream: boolean };
 
 /**  Declaration order is display order. */
 export type RefKind = 
@@ -313,10 +452,10 @@ export type Upstream = {
 
 export type UpstreamState = 
 /**
- *  The upstream ref exists locally. `ahead` counts commits on the branch the upstream lacks;
- *  `behind` counts commits on the upstream the branch lacks.
+ *  The upstream ref exists locally and points to `id`. `ahead` counts commits on the branch the
+ *  upstream lacks; `behind` counts commits on the upstream the branch lacks.
  */
-{ kind: "tracking"; ahead: number; behind: number } | 
+{ kind: "tracking"; ahead: number; behind: number; id: Oid } | 
 /**
  *  The upstream is configured but its remote-tracking ref doesn't exist (deleted on the remote
  *  and pruned, or never fetched).
