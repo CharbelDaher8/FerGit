@@ -97,6 +97,9 @@ fn git_command(cwd: &Path, args: &[&str], date: &str) -> Command {
         .env("GIT_COMMITTER_EMAIL", "carl@example.com")
         .env("GIT_COMMITTER_DATE", date)
         .envs(NO_PROMPTS)
+        // A scripted merge or rebase must never wait on an editor.
+        .env("GIT_EDITOR", ":")
+        .env("GIT_SEQUENCE_EDITOR", ":")
         .env("GIT_ASKPASS", REFUSING_ASKPASS)
         .env("SSH_ASKPASS", REFUSING_ASKPASS)
         .args(["-c", "credential.helper="])
