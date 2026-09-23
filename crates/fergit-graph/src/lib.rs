@@ -2,9 +2,15 @@
 //!
 //! [`Layout`] turns commits, fed one at a time in display order (children before parents), into
 //! [`GraphRow`]s: which lane each commit sits in and which line segments to draw in its row.
-//! Pure and deterministic: no I/O, no clock, no dependence on hash iteration order.
+//! [`Subgraph`] keeps the rows a filter shows and reconnects them, so a filtered history lays out
+//! as a graph of its own. Pure and deterministic: no I/O, no clock, no dependence on hash
+//! iteration order.
+
+mod subgraph;
 
 use serde::Serialize;
+
+pub use subgraph::Subgraph;
 
 /// Drawable geometry for one row of the graph.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
