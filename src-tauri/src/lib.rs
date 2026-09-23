@@ -8,7 +8,9 @@ use std::sync::{Arc, PoisonError, RwLock};
 
 use fergit_core::repo::{RepoError, RepoWatcher};
 use fergit_core::session::Session;
-use fergit_core::{CommitDetails, DiffSide, FileChange, FileDiff, Oid, RepoInfo, RowLocation, RowsPage};
+use fergit_core::{
+    CommitDetails, DiffSide, FileChange, FileDiff, Filter, Oid, RefLabel, RepoInfo, RowLocation, RowsPage, SearchResult,
+};
 use serde::Serialize;
 use specta_typescript::Typescript;
 use tauri::{AppHandle, State};
@@ -161,9 +163,46 @@ async fn file_diff(
     blocking(move || session.file_diff(from, to, &path, old_path.as_deref())).await
 }
 
+/// The rows of the current snapshot whose commit message, author or id `query` matches, ignoring
+/// case. Check `generation`: rows of an older snapshot mean nothing now.
+#[tauri::command]
+#[specta::specta]
+async fn search(state: State<'_, AppState>, query: String) -> Result<SearchResult, AppError> {
+    let session = state.session()?;
+    blocking(move || session.search(&query)).await
+}
+
+/// Shows only the commits `filter` selects (the default filter shows all). Returns what `refresh`
+/// would: the generation changes unless the filter was already applied.
+#[tauri::command]
+#[specta::specta]
+async fn set_filter(state: State<'_, AppState>, filter: Filter) -> Result<RepoInfo, AppError> {
+    let session = state.session()?;
+    blocking(move || session.set_filter(filter)).await
+}
+
+/// Every ref of the open repository, for choosing what to filter on.
+#[tauri::command]
+#[specta::specta]
+async fn refs(state: State<'_, AppState>) -> Result<Vec<RefLabel>, AppError> {
+    let session = state.session()?;
+    blocking(move || Ok::<_, RepoError>(session.refs())).await
+}
+
 fn specta_builder() -> Builder<tauri::Wry> {
     Builder::<tauri::Wry>::new()
-        .commands(collect_commands![open_repo, refresh, rows, locate, commit_details, changes, file_diff])
+        .commands(collect_commands![
+            open_repo,
+            refresh,
+            rows,
+            locate,
+            commit_details,
+            changes,
+            file_diff,
+            search,
+            set_filter,
+            refs
+        ])
         .events(collect_events![RepoChanged])
         .error_handling(ErrorHandlingMode::Throw)
 }

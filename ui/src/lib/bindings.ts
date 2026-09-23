@@ -60,6 +60,18 @@ export const commands = {
  *  untracked files that aren't ignored.
  */
 { kind: "worktree" } | null, to: DiffSide, path: string, oldPath: string | null) => __TAURI_INVOKE<FileDiff>("file_diff", { from, to, path, oldPath }),
+	/**
+	 *  The rows of the current snapshot whose commit message, author or id `query` matches, ignoring
+	 *  case. Check `generation`: rows of an older snapshot mean nothing now.
+	 */
+	search: (query: string) => __TAURI_INVOKE<SearchResult>("search", { query }),
+	/**
+	 *  Shows only the commits `filter` selects (the default filter shows all). Returns what `refresh`
+	 *  would: the generation changes unless the filter was already applied.
+	 */
+	setFilter: (filter: Filter) => __TAURI_INVOKE<RepoInfo>("set_filter", { filter }),
+	/**  Every ref of the open repository, for choosing what to filter on. */
+	refs: () => __TAURI_INVOKE<RefLabel[]>("refs"),
 };
 
 /** Events */
@@ -165,6 +177,28 @@ export type FileDiff =
 { kind: "submodule"; old: Oid | null; new: Oid | null };
 
 /**
+ *  Which commits a snapshot shows. The default shows every commit.
+ * 
+ *  A filtered snapshot is laid out as a history of its own: each shown commit's lines lead to its
+ *  nearest shown ancestors. The uncommitted-changes row is shown only while HEAD's commit is, and
+ *  a stash only while its base commit is.
+ */
+export type Filter = {
+	/**
+	 *  Full names of refs (`refs/heads/main`, `refs/remotes/origin/main`, `refs/tags/v1`, or
+	 *  `HEAD`): only commits reachable from one of them are shown. Empty shows commits of every ref.
+	 *  Names matching no ref are ignored, so if none matches, nothing is shown.
+	 */
+	refs: string[],
+	/**
+	 *  A file or directory, `/`-separated and relative to the repository root: only commits that
+	 *  change it are shown, following a merge down the side it took the path's content from, like
+	 *  `git log -- <path>`. `None` or blank shows commits whatever they change.
+	 */
+	path: string | null,
+};
+
+/**
  *  Identifies one snapshot of a repository. Increases every time the visible state changes, and
  *  keeps increasing across repositories opened in the same process, so the UI can discard any
  *  response or event from an older snapshot, including one of a previously open repository.
@@ -256,6 +290,8 @@ export type RepoInfo = {
 	rowCount: number,
 	/**  The commit HEAD points to; `None` in a repository without commits. */
 	head: Oid | null,
+	/**  Which commits the snapshot shows. */
+	filter: Filter,
 };
 
 export type Row = {
@@ -294,6 +330,15 @@ export type RowsPage = {
 	/**  Total rows in this snapshot. */
 	total: number,
 	rows: Row[],
+};
+
+/**  The rows of one snapshot that a search finds. */
+export type SearchResult = {
+	generation: Generation,
+	/**  Indices of the rows found, in order; only the first 10 000 ([`SearchResult::MAX_ROWS`]). */
+	rows: number[],
+	/**  How many rows were found, including those beyond `rows`. */
+	total: number,
 };
 
 export type Signature = {

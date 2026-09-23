@@ -158,7 +158,7 @@ impl Filter {
 #[serde(rename_all = "camelCase")]
 pub struct SearchResult {
     pub generation: Generation,
-    /// Indices of the rows found, in order; at most [`SearchResult::MAX_ROWS`], the first ones.
+    /// Indices of the rows found, in order; only the first 10 000 ([`SearchResult::MAX_ROWS`]).
     pub rows: Vec<u32>,
     /// How many rows were found, including those beyond `rows`.
     pub total: u32,
