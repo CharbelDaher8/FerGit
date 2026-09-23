@@ -2,8 +2,8 @@
 //!
 //! One JSON object per line (JSONL), appended and never rewritten. Each entry records what was
 //! asked, how every ref moved, and how it ended, so the journal serves as an audit trail and as the
-//! basis for undo, which will be a *new* operation restoring recorded values rather than an edit
-//! of the log.
+//! basis for undo, which is a *new* operation restoring recorded values rather than an edit of the
+//! log (see [`crate::Operation::Undo`]).
 //!
 //! Entries outlive the binary that wrote them, so the format only grows: fields are added with
 //! `#[serde(default)]`, never renamed or removed, and `schemaVersion` changes only if an entry's
@@ -18,7 +18,8 @@ use std::sync::{Mutex, PoisonError};
 use serde::{Deserialize, Serialize};
 
 use crate::repo::RefValues;
-use crate::types::{Oid, OpErrorKind, OpId, Operation};
+pub use crate::types::RefChange;
+use crate::types::{OpErrorKind, OpId, Operation};
 
 /// The `schemaVersion` of the entries this build writes.
 pub const SCHEMA_VERSION: u32 = 1;
@@ -60,15 +61,6 @@ pub struct JournalEntry {
 pub struct JournalError {
     pub kind: OpErrorKind,
     pub message: String,
-}
-
-/// A ref that differed between before and after. `None` means the ref didn't exist.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RefChange {
-    pub name: String,
-    pub before: Option<Oid>,
-    pub after: Option<Oid>,
 }
 
 /// The refs that differ between `before` and `after`, sorted by name.
@@ -138,6 +130,7 @@ impl Journal {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::Oid;
 
     fn oid(byte: u8) -> Oid {
         Oid::from_bytes(&[byte; 20]).unwrap()

@@ -19,6 +19,7 @@ mod diff;
 mod history;
 mod merges;
 mod refs;
+mod state;
 mod status;
 mod table;
 mod upstream;
@@ -33,10 +34,10 @@ pub use merges::MergeNames;
 pub use refs::RefValues;
 pub use table::CommitTable;
 pub use watch::RepoWatcher;
-pub use write::OpFailure;
+pub use write::{HeadMove, OpFailure, RefMove, Restore, WorktreeMode};
 
 use crate::askpass::Askpass;
-use crate::types::{CommitDetails, DiffSide, FileChange, FileDiff, Oid, Operation, RefLabel};
+use crate::types::{CommitDetails, DiffSide, FileChange, FileDiff, Oid, Operation, RefLabel, RepoState};
 
 #[derive(Debug, thiserror::Error)]
 pub enum RepoError {
@@ -160,9 +161,21 @@ impl Repo {
         write::run(&self.repo.to_thread_local(), &self.root, op, askpass, progress)
     }
 
+    /// Puts back what an operation changed, as the session worked out from the journal; see
+    /// [`Restore`]. Refused, changing nothing, if what is to be restored has moved since.
+    pub fn restore(&self, restore: &Restore, progress: &mut dyn FnMut(&str)) -> Result<(), OpFailure> {
+        write::restore(&self.repo.to_thread_local(), &self.root, restore, progress)
+    }
+
     /// The exact current value of HEAD and every ref; see [`RefValues`].
     pub fn ref_values(&self) -> Result<RefValues, RepoError> {
         refs::read(&self.repo.to_thread_local())
+    }
+
+    /// What git is in the middle of, and which files have conflicts. Reads the git directory and
+    /// the index as they are now; cheap enough to call on every refresh.
+    pub fn read_state(&self) -> Result<RepoState, RepoError> {
+        state::read(&self.repo.to_thread_local())
     }
 }
 

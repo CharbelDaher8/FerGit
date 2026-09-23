@@ -105,6 +105,66 @@ pub struct RepoInfo {
     pub row_count: u32,
     /// The commit HEAD points to; `None` in a repository without commits.
     pub head: Option<Oid>,
+    /// Short name of the branch HEAD names (even one without commits yet); `None` when detached.
+    pub branch: Option<String>,
+    /// Whether a merge, rebase, cherry-pick or revert is in progress, and which files conflict.
+    pub state: RepoState,
+}
+
+/// What git is in the middle of. Stopping with conflicts is a normal state, not an error: the user
+/// resolves the files in their editor, then continues or aborts (see [`Operation::Continue`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum RepoState {
+    /// Nothing in progress, and no file has conflicts.
+    Clean,
+    /// A merge stopped before committing. `heads` are the commits being merged in (none for a
+    /// squash merge, which records no merge); `message` is the first line of the prepared message.
+    Merging { heads: Vec<Oid>, squash: bool, message: String, conflicts: Vec<ConflictFile> },
+    /// A rebase of `branch` (`None`: of a detached HEAD) onto `onto` stopped at commit `at`, which
+    /// is step `step` of `total`.
+    Rebasing {
+        branch: Option<String>,
+        onto: Option<Oid>,
+        at: Option<Oid>,
+        step: u32,
+        total: u32,
+        conflicts: Vec<ConflictFile>,
+    },
+    /// A cherry-pick stopped at `commit` (`None` if git no longer records which).
+    CherryPicking { commit: Option<Oid>, conflicts: Vec<ConflictFile> },
+    /// A revert stopped at `commit` (`None` if git no longer records which).
+    Reverting { commit: Option<Oid>, conflicts: Vec<ConflictFile> },
+    /// Files have conflicts but nothing is in progress: a stash that didn't apply cleanly. The
+    /// stash is kept.
+    Unmerged { conflicts: Vec<ConflictFile> },
+}
+
+impl RepoState {
+    /// The files with conflicts, sorted by path.
+    pub fn conflicts(&self) -> &[ConflictFile] {
+        match self {
+            RepoState::Clean => &[],
+            RepoState::Merging { conflicts, .. }
+            | RepoState::Rebasing { conflicts, .. }
+            | RepoState::CherryPicking { conflicts, .. }
+            | RepoState::Reverting { conflicts, .. }
+            | RepoState::Unmerged { conflicts } => conflicts,
+        }
+    }
+}
+
+/// A file git couldn't merge.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+#[serde(rename_all = "camelCase")]
+pub struct ConflictFile {
+    /// `/`-separated, relative to the worktree root.
+    pub path: String,
+    /// The file on disk no longer has conflict markers (or was deleted): continuing will take it
+    /// as it is.
+    pub resolved: bool,
 }
 
 /// A contiguous run of graph rows from one snapshot.
@@ -395,6 +455,111 @@ pub enum Operation {
         #[serde(rename = "setUpstream")]
         set_upstream: bool,
     },
+    /// Merge `from` into the current branch. Stopping with conflicts succeeds, leaving
+    /// [`RepoState::Merging`].
+    Merge { from: Rev, mode: MergeMode },
+    /// Replay the current branch's commits onto `onto`, without an editor. Stopping with conflicts
+    /// succeeds, leaving [`RepoState::Rebasing`].
+    Rebase { onto: Rev },
+    /// Apply the changes of `commits`, in this order, as new commits on the current branch.
+    /// Stopping with conflicts succeeds, leaving [`RepoState::CherryPicking`].
+    CherryPick { commits: Vec<Oid> },
+    /// Add a commit undoing the changes of `commit`. Stopping with conflicts succeeds, leaving
+    /// [`RepoState::Reverting`].
+    Revert { commit: Oid },
+    /// Move the local branch `branch` to `to`, but only if it is still at `expected`, the tip the
+    /// user was looking at; otherwise it fails as [`OpErrorKind::Moved`], changing nothing. For the
+    /// current branch, `mode` says what happens to the index and worktree.
+    Reset { branch: String, to: Oid, mode: ResetMode, expected: Oid },
+    /// Finish what is in progress: stage the conflicted files (refused while any still has conflict
+    /// markers), then commit and carry on with the rest of a rebase, cherry-pick or revert.
+    Continue,
+    /// Give up what is in progress, putting the branch and files back as they were before it.
+    Abort,
+    /// Leave out the commit a rebase, cherry-pick or revert stopped at, and carry on.
+    Skip,
+    /// Save uncommitted changes (and untracked files, if `untracked`) as a new stash, leaving the
+    /// worktree clean.
+    StashPush { message: Option<String>, untracked: bool },
+    /// Apply the changes of stash `stash@{index}`, which must still be the stash `id`, keeping it.
+    StashApply { index: u32, id: Oid },
+    /// Apply stash `stash@{index}` (still `id`) and remove it; a stash that conflicts is kept.
+    StashPop { index: u32, id: Oid },
+    /// Remove stash `stash@{index}`, which must still be the stash `id`.
+    StashDrop { index: u32, id: Oid },
+    /// Put back what the journal entry `entry` recorded before it ran: the refs it moved (not
+    /// remote-tracking ones), HEAD if it switched branches, a stash it dropped or pushed. Refused,
+    /// changing nothing, if any of those has moved since.
+    Undo { entry: OpId },
+}
+
+/// A commit given by a ref (`refs/heads/x`, `refs/remotes/origin/x`, `refs/tags/v1`) or by id.
+/// Naming the ref lets git word the merge message after it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum Rev {
+    /// A ref by full name.
+    Ref { name: String },
+    Commit { id: Oid },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+#[serde(rename_all = "camelCase")]
+pub enum MergeMode {
+    /// Fast-forward when the branch has no commits of its own, else create a merge commit.
+    Ff,
+    /// Always create a merge commit.
+    NoFf,
+    /// Commit the combined changes as one ordinary commit, recording no merge.
+    Squash,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+#[serde(rename_all = "camelCase")]
+pub enum ResetMode {
+    /// Move the branch only; the undone commits' changes stay staged.
+    Soft,
+    /// Move the branch and reset the index; the changes stay in the files, unstaged.
+    Mixed,
+    /// Move the branch and make the index and files match it, discarding uncommitted changes to
+    /// tracked files. Discarded changes are gone for good: git never stored them.
+    Hard,
+}
+
+/// A ref that differed between before and after an operation. `None` means the ref didn't exist.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+#[serde(rename_all = "camelCase")]
+pub struct RefChange {
+    pub name: String,
+    pub before: Option<Oid>,
+    pub after: Option<Oid>,
+}
+
+/// What [`Operation::Undo`] would do now.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum Undoable {
+    /// The operation `entry` can be undone: `changes` are the refs that go back to `before`, and
+    /// `head` is the HEAD that is restored if HEAD moves too.
+    Ready {
+        entry: OpId,
+        operation: Operation,
+        /// When it started, milliseconds since the Unix epoch.
+        #[serde(rename = "startedAtMs")]
+        #[cfg_attr(feature = "specta", specta(type = specta_typescript::Number))]
+        started_at_ms: u64,
+        changes: Vec<RefChange>,
+        head: Option<String>,
+    },
+    /// The most recent operation can't be undone, for `reason`.
+    Blocked { operation: Operation, reason: String },
+    /// No operation on this repository was recorded, or all have been undone.
+    Nothing,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -461,6 +626,9 @@ pub enum OpErrorKind {
     Rejected,
     /// A lease-protected push found the remote branch somewhere other than expected.
     StaleLease,
+    /// A branch, HEAD or stash wasn't where the operation expected it (a reset's `expected` tip,
+    /// what an undo would restore from), so nothing was changed.
+    Moved,
     /// The remote wanted credentials that were missing, cancelled or wrong.
     AuthFailed,
     /// Git couldn't be started.

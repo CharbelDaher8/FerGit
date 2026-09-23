@@ -7,16 +7,19 @@
 //! option.
 
 mod git;
+mod history;
+mod restore;
 mod scrub;
 
 use std::path::Path;
 
 use gix::bstr::{BStr, ByteSlice};
 
+pub use self::restore::{HeadMove, RefMove, Restore, WorktreeMode};
 use self::git::{Git, Output};
 use super::upstream::current_config;
 use crate::askpass::Askpass;
-use crate::types::{CheckoutTarget, ForceMode, OpError, OpErrorKind, Operation};
+use crate::types::{CheckoutTarget, ForceMode, OpError, OpErrorKind, Operation, RepoState, Rev};
 
 /// Why an operation failed, and git's exit code if it got as far as running git.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,6 +43,17 @@ pub(super) fn run(
 ) -> Result<(), OpFailure> {
     let writer = Writer { repo, git: Git { root, askpass }, progress };
     writer.run(op)
+}
+
+pub(super) fn restore(
+    repo: &gix::Repository,
+    root: &Path,
+    restore: &Restore,
+    progress: &mut dyn FnMut(&str),
+) -> Result<(), OpFailure> {
+    // Restoring never talks to a remote, so it never needs credentials.
+    let mut writer = Writer { repo, git: Git { root, askpass: None }, progress };
+    writer.restore(restore)
 }
 
 struct Writer<'a> {
@@ -167,15 +181,58 @@ impl Writer<'_> {
                 let args: Vec<&str> = args.iter().map(String::as_str).collect();
                 self.git(&args).map_err(|out| push_failure(out, branch, &remote))
             }
+            Operation::Merge { from, mode } => self.merge(from, *mode),
+            Operation::Rebase { onto } => self.rebase(onto),
+            Operation::CherryPick { commits } => self.cherry_pick(commits),
+            Operation::Revert { commit } => self.revert(*commit),
+            Operation::Reset { branch, to, mode, expected } => self.reset(branch, *to, *mode, *expected),
+            Operation::Continue => self.continue_in_progress(),
+            Operation::Abort => self.abort_in_progress(),
+            Operation::Skip => self.skip_in_progress(),
+            Operation::StashPush { message, untracked } => self.stash_push(message.as_deref(), *untracked),
+            Operation::StashApply { index, id } => self.stash_apply(*index, *id, false),
+            Operation::StashPop { index, id } => self.stash_apply(*index, *id, true),
+            Operation::StashDrop { index, id } => self.stash_drop(*index, *id),
+            // What an undo restores comes from the journal, which only the session reads.
+            Operation::Undo { .. } => Err(OpFailure::before_git(
+                OpErrorKind::InvalidInput,
+                "Undo needs the operation journal; run it through a session.",
+            )),
         }
     }
 
     /// Runs git; `Err` carries the output of a command that failed.
     fn git(&mut self, args: &[&str]) -> Result<(), GitFailed> {
-        match self.git.run(args, self.progress) {
-            Ok(output) if output.success() => Ok(()),
-            Ok(output) => Err(GitFailed::Ran(output)),
-            Err(err) => Err(GitFailed::NotStarted(err)),
+        self.git_output(args).map(drop)
+    }
+
+    /// Runs git, returning what a successful command printed; `Err` carries the output of a
+    /// command that failed.
+    fn git_output(&mut self, args: &[&str]) -> Result<Output, GitFailed> {
+        GitFailed::check(self.git.run(args, self.progress))
+    }
+
+    /// Like [`Writer::git_output`], writing `input` to git's stdin.
+    fn git_with_input(&mut self, args: &[&str], input: &[u8]) -> Result<Output, GitFailed> {
+        GitFailed::check(self.git.run_with_input(args, input, self.progress))
+    }
+
+    /// What git is in the middle of, as it is now.
+    fn state(&self) -> Result<RepoState, OpFailure> {
+        super::state::read(self.repo).map_err(|err| OpFailure::before_git(OpErrorKind::Git, err.to_string()))
+    }
+
+    /// Treats a command that failed because it stopped with conflicts as a success: that is a
+    /// normal state the user resolves (see [`RepoState`]). Any other failure is `fail(out)`.
+    fn stopped_for_conflicts(
+        &self,
+        result: Result<(), GitFailed>,
+        fail: impl FnOnce(GitFailed) -> OpFailure,
+    ) -> Result<(), OpFailure> {
+        match result {
+            Ok(()) => Ok(()),
+            Err(out) if matches!(out, GitFailed::Ran(_)) && !self.state()?.conflicts().is_empty() => Ok(()),
+            Err(out) => Err(fail(out)),
         }
     }
 
@@ -237,6 +294,15 @@ enum GitFailed {
 }
 
 impl GitFailed {
+    /// The output of a command that succeeded, or why it didn't.
+    fn check(ran: std::io::Result<Output>) -> Result<Output, GitFailed> {
+        match ran {
+            Ok(output) if output.success() => Ok(output),
+            Ok(output) => Err(GitFailed::Ran(output)),
+            Err(err) => Err(GitFailed::NotStarted(err)),
+        }
+    }
+
     /// Git's messages; empty if it didn't start.
     fn stderr(&self) -> &str {
         match self {
@@ -355,6 +421,64 @@ fn push_failure(failed: GitFailed, branch: &str, remote: &str) -> OpFailure {
     network_failure(failed, &format!("Can't push {branch} to {remote}"))
 }
 
+/// A failed merge, rebase, cherry-pick, revert or stash apply that didn't stop for conflicts.
+fn integration_failure(failed: GitFailed, context: &str) -> OpFailure {
+    let text = format!("{}\n{}", failed.stderr(), failed.stdout());
+    let lower = text.to_ascii_lowercase();
+    const LOCAL_CHANGES: [&str; 5] = [
+        "would be overwritten",
+        "you have unstaged changes",
+        "your index contains uncommitted changes",
+        "your local changes would be overwritten",
+        "needs merge",
+    ];
+    if LOCAL_CHANGES.iter().any(|pattern| lower.contains(pattern)) {
+        let message = format!("{context}: uncommitted changes would be overwritten. Commit or stash them first.");
+        return failure(failed, OpErrorKind::LocalChanges, message);
+    }
+    const IN_PROGRESS: [&str; 4] = [
+        "you have not concluded your merge",
+        "already a rebase-merge directory",
+        "already a rebase-apply directory",
+        "is already in progress",
+    ];
+    if IN_PROGRESS.iter().any(|pattern| lower.contains(pattern)) {
+        let message = format!("{context}: something else is in progress. Continue or abort it first.");
+        return failure(failed, OpErrorKind::InvalidInput, message);
+    }
+    git_failure(failed, context)
+}
+
+/// The argument naming `rev` for git: a full ref name, checked to be a branch, remote-tracking
+/// branch or tag, or a commit id.
+fn rev_arg(rev: &Rev) -> Result<String, OpFailure> {
+    match rev {
+        Rev::Commit { id } => Ok(id.to_string()),
+        Rev::Ref { name } => {
+            let known = ["refs/heads/", "refs/remotes/", "refs/tags/"]
+                .iter()
+                .any(|prefix| name.strip_prefix(prefix).is_some_and(|rest| !rest.is_empty()));
+            if known && gix::validate::reference::name(BStr::new(name)).is_ok() {
+                Ok(name.clone())
+            } else {
+                Err(OpFailure::before_git(OpErrorKind::InvalidInput, format!("{name:?} isn't a branch or tag.")))
+            }
+        }
+    }
+}
+
+/// How messages name `rev`: a short ref name, or an abbreviated commit id.
+fn rev_name(rev: &Rev) -> String {
+    match rev {
+        Rev::Commit { id } => id.to_string()[..7].to_owned(),
+        Rev::Ref { name } => ["refs/heads/", "refs/remotes/", "refs/tags/"]
+            .iter()
+            .find_map(|prefix| name.strip_prefix(prefix))
+            .unwrap_or(name)
+            .to_owned(),
+    }
+}
+
 /// The line of git's messages that best says what went wrong: the first `fatal:` or `error:`
 /// line, without the prefix.
 fn git_summary(stderr: &str) -> Option<&str> {
@@ -428,6 +552,16 @@ mod tests {
         assert!(remote_tracking_ref("refs/heads/main").is_err());
         assert!(remote_tracking_ref("refs/remotes/origin").is_err());
         assert!(remote_tracking_ref("refs/remotes/origin/a..b").is_err());
+    }
+
+    #[test]
+    fn revs_are_validated() {
+        let rev = |name: &str| rev_arg(&Rev::Ref { name: name.to_owned() });
+        assert_eq!(rev("refs/remotes/origin/main").unwrap(), "refs/remotes/origin/main");
+        for invalid in ["main", "--upload-pack=x", "refs/heads/", "refs/heads/a..b", "refs/notes/x", "HEAD"] {
+            assert_eq!(rev(invalid).unwrap_err().error.kind, OpErrorKind::InvalidInput, "{invalid:?}");
+        }
+        assert_eq!(rev_name(&Rev::Ref { name: "refs/tags/v1".to_owned() }), "v1");
     }
 
     #[test]

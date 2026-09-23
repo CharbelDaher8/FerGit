@@ -4,10 +4,11 @@ use std::collections::VecDeque;
 use std::sync::{Arc, PoisonError};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use super::Session;
 use super::journal::{Journal, JournalEntry, JournalError, SCHEMA_VERSION, ref_changes};
+use super::{Session, undo};
 use crate::askpass::Askpass;
-use crate::types::{OpId, OpOutcome, Operation};
+use crate::repo::{OpFailure, Restore};
+use crate::types::{OpError, OpErrorKind, OpId, OpOutcome, Operation, Undoable};
 
 /// How many finished operations a session remembers to recognize a repeated id. Repeats come from
 /// double clicks and retried requests, seconds apart, so a short memory is plenty.
@@ -51,7 +52,12 @@ impl Session {
         // If the refs can't be read the journal can't say what moved, but the operation itself
         // may still work; git will report what is wrong if not.
         let before = self.repo.ref_values().unwrap_or_default();
-        let result = self.repo.run(&op, context.askpass.as_ref(), progress);
+        let result = match &op {
+            Operation::Undo { entry } => {
+                self.undo_plan(entry, context).and_then(|restore| self.repo.restore(&restore, progress))
+            }
+            op => self.repo.run(op, context.askpass.as_ref(), progress),
+        };
         let duration = clock.elapsed();
         let after = self.repo.ref_values().unwrap_or_default();
         let info = self.refresh().unwrap_or_else(|_| self.info());
@@ -91,5 +97,34 @@ impl Session {
         }
         writer.finished.push_back((id, outcome.clone()));
         outcome
+    }
+
+    /// What [`Operation::Undo`] would restore now, according to `journal`: the most recent
+    /// operation on this repository that hasn't been undone and changed something undo restores,
+    /// or why it can't be undone.
+    pub fn undoable(&self, journal: &Journal) -> std::io::Result<Undoable> {
+        let entries = Journal::read(journal.path())?;
+        Ok(undo::decide(&entries, &self.info().root).undoable())
+    }
+
+    /// How to undo the journal entry `target`, which must still be the one [`Session::undoable`]
+    /// names: the user confirmed undoing that operation, not whatever is most recent by now.
+    fn undo_plan(&self, target: &OpId, context: &OpContext) -> Result<Restore, OpFailure> {
+        let refuse = |kind, message: String| OpFailure { error: OpError { kind, message, output: String::new() }, exit_code: None };
+        let Some(journal) = &context.journal else {
+            return Err(refuse(OpErrorKind::InvalidInput, "No operation journal is kept, so there is nothing to undo.".to_owned()));
+        };
+        let entries = Journal::read(journal.path())
+            .map_err(|err| refuse(OpErrorKind::Git, format!("Can't read the operation journal: {err}")))?;
+        match undo::decide(&entries, &self.info().root) {
+            undo::Decision::Ready(entry, restore) if entry.id == *target => Ok(restore),
+            undo::Decision::Ready(..) | undo::Decision::Blocked(..) if entries.iter().any(|e| e.id == *target) => Err(refuse(
+                OpErrorKind::Moved,
+                "That is no longer the most recent operation, or it was already undone. Look again before undoing."
+                    .to_owned(),
+            )),
+            undo::Decision::Blocked(_, reason) => Err(refuse(OpErrorKind::InvalidInput, reason)),
+            _ => Err(refuse(OpErrorKind::InvalidInput, "There is nothing to undo.".to_owned())),
+        }
     }
 }
