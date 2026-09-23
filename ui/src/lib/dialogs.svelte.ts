@@ -6,6 +6,8 @@ export interface DialogSpec {
   fields: Field[];
   /** Label of the confirming button. */
   confirm: string;
+  /** Label of the cancelling button; `null` for a notice, which only has the confirming one. */
+  cancel?: string | null;
   /** Confirming destroys or replaces something: the button is styled as a warning. */
   danger?: boolean;
 }
@@ -23,9 +25,18 @@ export type Field =
       secret?: boolean;
       multiline?: boolean;
     }
-  | { kind: "checkbox"; key: string; label: string; value?: boolean };
+  | { kind: "checkbox"; key: string; label: string; value?: boolean }
+  /** One of several options, as radio buttons; its value is the chosen option's `value`. */
+  | { kind: "choice"; key: string; label: string; options: ChoiceOption[]; value: string };
 
-/** What was entered, by field key: strings for text fields, booleans for checkboxes. */
+export interface ChoiceOption {
+  value: string;
+  label: string;
+  /** What choosing it means, shown beside the label. */
+  hint?: string;
+}
+
+/** What was entered, by field key: strings for text and choice fields, booleans for checkboxes. */
 export type DialogValues = Record<string, string | boolean>;
 
 interface Pending {
@@ -70,7 +81,7 @@ export const dialogs = new Dialogs();
 export function initialValues(spec: DialogSpec): DialogValues {
   const values: DialogValues = {};
   for (const field of spec.fields) {
-    values[field.key] = field.kind === "text" ? (field.value ?? "") : (field.value ?? false);
+    values[field.key] = field.kind === "checkbox" ? (field.value ?? false) : (field.value ?? "");
   }
   return values;
 }

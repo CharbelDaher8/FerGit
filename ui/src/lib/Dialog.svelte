@@ -53,6 +53,21 @@
             <input type="checkbox" bind:checked={values[field.key] as boolean} />
             {field.label}
           </label>
+        {:else if field.kind === "choice"}
+          <fieldset class="choice">
+            <legend>{field.label}</legend>
+            {#each field.options as option (option.value)}
+              <label class="option">
+                <input type="radio" name={field.key} value={option.value} bind:group={values[field.key] as string} />
+                <span>
+                  <span class="option-label">{option.label}</span>
+                  {#if option.hint}
+                    <span class="option-hint">{option.hint}</span>
+                  {/if}
+                </span>
+              </label>
+            {/each}
+          </fieldset>
         {:else}
           <label class="text">
             <span>{field.label}</span>
@@ -71,7 +86,9 @@
         {/if}
       {/each}
       <div class="buttons">
-        <button type="button" class="button" onclick={() => onclose(null)}>Cancel</button>
+        {#if spec.cancel !== null}
+          <button type="button" class="button" onclick={() => onclose(null)}>{spec.cancel ?? "Cancel"}</button>
+        {/if}
         <button type="submit" class="button primary confirm" class:danger={spec.danger} disabled={!ready}>
           {spec.confirm}
         </button>
@@ -151,6 +168,42 @@
   .checkbox input {
     margin: 0;
     accent-color: var(--primary-bg);
+  }
+
+  .choice {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin: 0;
+    padding: 0;
+    border: 0;
+  }
+
+  legend {
+    margin-bottom: 4px;
+    padding: 0;
+    color: var(--fg-muted);
+    font-size: 12px;
+  }
+
+  .option {
+    display: flex;
+    align-items: flex-start;
+    gap: 6px;
+    user-select: none;
+  }
+
+  .option input {
+    margin: 2px 0 0;
+    accent-color: var(--primary-bg);
+  }
+
+  .option-label {
+    font-weight: 600;
+  }
+
+  .option-hint {
+    color: var(--fg-muted);
   }
 
   .buttons {
