@@ -47,6 +47,14 @@
       ],
     },
     {
+      title: "Tabs",
+      keys: [
+        ["Ctrl+T", "Open a repository in a new tab"],
+        ["Ctrl+W", "Close the tab (middle-click too)"],
+        ["Ctrl+Tab  Ctrl+Shift+Tab", "Next / previous tab"],
+      ],
+    },
+    {
       title: "Anywhere",
       keys: [
         ["?", "Show or hide these shortcuts"],

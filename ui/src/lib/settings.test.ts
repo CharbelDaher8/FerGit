@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { Settings, type SettingsStorage } from "./settings.svelte";
+import { Settings, parseTabs, type SettingsStorage } from "./settings.svelte";
 
 function memoryStorage(initial: Record<string, string> = {}) {
   const values = new Map(Object.entries(initial));
@@ -44,5 +44,27 @@ describe("Settings", () => {
     expect(settings.showRelations).toBe(true);
     settings.showRelations = false;
     expect(settings.showRelations).toBe(false);
+  });
+});
+
+describe("saved tabs", () => {
+  it("has none by default, and reads back what was saved", () => {
+    const storage = memoryStorage();
+    expect(new Settings(storage).tabs).toEqual({ paths: [], active: null });
+    new Settings(storage).tabs = { paths: ["/a", "/b"], active: 1 };
+    expect(new Settings(storage).tabs).toEqual({ paths: ["/a", "/b"], active: 1 });
+  });
+
+  it("reads anything unreadable as no tabs", () => {
+    for (const stored of [null, "", "{", "null", "[]", '{"paths":"/a"}', '{"paths":[]}', '{"paths":[1,""]}']) {
+      expect(parseTabs(stored)).toEqual({ paths: [], active: null });
+    }
+  });
+
+  it("skips entries that aren't paths and falls back to the first tab for a bad active index", () => {
+    expect(parseTabs('{"paths":["/a",3,"/b"],"active":1}')).toEqual({ paths: ["/a", "/b"], active: 1 });
+    expect(parseTabs('{"paths":["/a","/b"],"active":2}')).toEqual({ paths: ["/a", "/b"], active: 0 });
+    expect(parseTabs('{"paths":["/a","/b"],"active":0.5}')).toEqual({ paths: ["/a", "/b"], active: 0 });
+    expect(parseTabs('{"paths":["/a"]}')).toEqual({ paths: ["/a"], active: 0 });
   });
 });

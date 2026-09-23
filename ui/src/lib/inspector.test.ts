@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { CommitDetails, FileChange, FileDiff, Row } from "./bindings";
 import {
   Inspector,
@@ -18,21 +18,17 @@ interface Call {
 }
 
 /** A fake backend: every command stays pending until a test answers it. */
-const backend = vi.hoisted(() => ({ calls: [] as Call[] }));
+const backend = { calls: [] as Call[] };
 
-vi.mock("./bindings", () => {
-  const defer =
-    (command: string) =>
-    (...args: unknown[]) =>
-      new Promise((resolve) => backend.calls.push({ command, args, resolve }));
-  return {
-    commands: {
-      commitDetails: defer("commitDetails"),
-      changes: defer("changes"),
-      fileDiff: defer("fileDiff"),
-    },
-  };
-});
+const defer =
+  <T>(command: string) =>
+  (...args: unknown[]) =>
+    new Promise<T>((resolve) => backend.calls.push({ command, args, resolve: resolve as (value: unknown) => void }));
+const client = {
+  commitDetails: defer<CommitDetails | null>("commitDetails"),
+  changes: defer<FileChange[]>("changes"),
+  fileDiff: defer<FileDiff>("fileDiff"),
+};
 
 /** Removes and returns the oldest pending call of `command`. */
 function take(command: string): Call {
@@ -81,7 +77,7 @@ function row(id: string, kind: Row["kind"] = "commit"): Row {
 
 const inspectors: Inspector[] = [];
 function inspector(): Inspector {
-  const created = new Inspector();
+  const created = new Inspector(client);
   inspectors.push(created);
   return created;
 }

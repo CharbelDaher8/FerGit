@@ -164,6 +164,7 @@ A few general commands beat 30 specific ones:
 
 ```
 open_repo(path)                                 -> RepoInfo { id, generation, row_count }
+close_repo(repo)                                -> ()             // closing a closed repo → Ok
 rows(repo, generation, start, len)              -> RowsPage       // clamped, never errors
 locate(repo, generation, oid)                   -> Option<u32>
 commit_details(repo, oid)                       -> CommitDetails
@@ -173,6 +174,7 @@ run(repo, op_id, Operation, Channel<Progress>)  -> OpOutcome
 event repo_changed { repo, generation, row_count }
 ```
 
+- **`repo` is a session id, one per tab.** The backend keeps a registry of open sessions, each with its own snapshot and file watcher. A repository is open at most once: opening it again, by any path inside it, returns its existing session, and the UI brings that tab to the front. Ids are never reused, so a late request or event for a closed tab can't reach another one.
 - **One diff mechanism.** `DiffSpec { from: Side, to: Side, paths }`, with `Side = Commit(oid) | Index | WorkTree`, covers the commit view, comparing two commits, uncommitted changes and stashes (APOSD ch6).
 - **Generate the TypeScript types** from Rust with `tauri-specta`. The schema is defined once, so a hand-written `types.ts` can't drift from the Rust structs (APOSD ch5).
 - **Compatibility, only where it matters (DDIA ch4).** The UI and backend ship in the same binary, so the IPC schema needs no versioning. What does need it is data that **outlives the binary**: `settings.json`, the journal, any cache.

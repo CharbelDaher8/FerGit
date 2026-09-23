@@ -4,6 +4,7 @@
 //! patches its own copy of repository state. [`Session::refresh`] re-reads git and swaps in a new
 //! snapshot, with a new generation, only if something visible changed.
 
+mod registry;
 mod relations;
 
 use std::collections::HashMap;
@@ -19,6 +20,7 @@ use crate::types::{
     CommitDetails, DiffSide, FileChange, FileDiff, Generation, Oid, RefKind, RefLabel, RepoInfo, Row, RowKind,
     RowLocation, RowsPage, Upstream, UpstreamState,
 };
+pub use registry::Sessions;
 use relations::{Relations, RelationsBuilder, RowInput, branch_name};
 
 /// The generation of the next snapshot any session in this process builds. Sharing it across
@@ -44,7 +46,11 @@ pub struct Session {
 impl Session {
     /// Opens the repository containing `path` and reads its first snapshot.
     pub fn open(path: &Path) -> Result<Session, RepoError> {
-        let repo = Repo::open(path)?;
+        Session::with_repo(Repo::open(path)?)
+    }
+
+    /// Reads the first snapshot of an already opened repository.
+    fn with_repo(repo: Repo) -> Result<Session, RepoError> {
         let history = repo.read_history()?;
         let mut merge_names = IdMap::default();
         read_merge_names(&repo, &history.commits, &mut merge_names)?;

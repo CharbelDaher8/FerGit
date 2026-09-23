@@ -10,6 +10,7 @@ import {
 
 interface Options {
   ctrl?: boolean;
+  shift?: boolean;
   alt?: boolean;
   meta?: boolean;
   editable?: boolean;
@@ -28,6 +29,7 @@ function keyboard(context: KeyContext = "graph") {
       {
         key,
         ctrlKey: options.ctrl ?? false,
+        shiftKey: options.shift ?? false,
         altKey: options.alt ?? false,
         metaKey: options.meta ?? false,
         editable: options.editable ?? false,
@@ -258,5 +260,38 @@ describe("keymaps", () => {
     expect(press("ArrowDown")).toEqual({ command: null, handled: false });
     expect(press("Enter")).toEqual({ command: null, handled: false });
     expect(press("d", { ctrl: true }).command).toEqual({ kind: "page", by: 0.5 });
+  });
+});
+
+describe("tabs", () => {
+  it("opens, closes and switches tabs with Ctrl, in every context", () => {
+    for (const context of ["graph", "files", "diff", "help", "other"] as const) {
+      const { press } = keyboard(context);
+      expect(press("t", { ctrl: true }).command).toEqual({ kind: "newTab" });
+      expect(press("w", { ctrl: true }).command).toEqual({ kind: "closeTab" });
+      expect(press("Tab", { ctrl: true }).command).toEqual({ kind: "switchTab", by: 1 });
+      expect(press("Tab", { ctrl: true, shift: true }).command).toEqual({ kind: "switchTab", by: -1 });
+    }
+  });
+
+  it("works from editable elements too, and with Caps Lock on", () => {
+    const { press } = keyboard();
+    expect(press("w", { ctrl: true, editable: true }).command).toEqual({ kind: "closeTab" });
+    expect(press("T", { ctrl: true }).command).toEqual({ kind: "newTab" });
+  });
+
+  it("leaves other combinations alone", () => {
+    const { press } = keyboard();
+    expect(press("T", { ctrl: true, shift: true })).toEqual({ command: null, handled: false });
+    expect(press("t", { ctrl: true, alt: true })).toEqual({ command: null, handled: false });
+    expect(press("Tab")).toEqual({ command: null, handled: false });
+  });
+
+  it("drops a half-typed sequence", () => {
+    const { interpreter, press, type } = keyboard();
+    type("5", "g");
+    press("Tab", { ctrl: true });
+    expect(interpreter.pending).toBe("");
+    expect(type("j")).toEqual([{ kind: "move", by: 1 }]);
   });
 });

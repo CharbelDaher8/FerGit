@@ -87,11 +87,18 @@ impl<'de> Deserialize<'de> for Oid {
 
 /// Identifies one snapshot of a repository. Increases every time the visible state changes, and
 /// keeps increasing across repositories opened in the same process, so the UI can discard any
-/// response or event from an older snapshot, including one of a previously open repository.
+/// response or event from an older snapshot, including one of a repository it opened before.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(transparent)]
 pub struct Generation(pub u32);
+
+/// Identifies one open session (a tab in the UI) for as long as it is open. Never reused within a
+/// process, so a request or event naming a closed session can't reach one opened after it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+#[serde(transparent)]
+pub struct SessionId(pub u32);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
