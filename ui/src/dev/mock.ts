@@ -150,6 +150,7 @@ const info: RepoInfo = {
   name: "relations-demo",
   generation: 1,
   rowCount: rows.length,
+  filter: { refs: [], path: null },
   head: rows[0].id,
 };
 

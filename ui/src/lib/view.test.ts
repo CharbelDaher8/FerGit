@@ -57,7 +57,7 @@ function ids(count: number, prefix = "c"): string[] {
 function snapshot(generation: number, rowIds: string[]): RepoInfo {
   backend.generation = generation;
   backend.ids = rowIds;
-  return { root: "/repo", name: "repo", head: null, generation, rowCount: rowIds.length };
+  return { root: "/repo", name: "repo", head: null, filter: { refs: [], path: null }, generation, rowCount: rowIds.length };
 }
 
 /** Lets pending commands, their follow-ups and re-anchoring run. */
@@ -239,7 +239,7 @@ describe("RepoView re-anchoring", () => {
 
   it("does nothing on a refresh with the same generation", async () => {
     const view = await openView(70, 10);
-    view.adopt({ root: "/repo", name: "repo", head: null, generation: 1, rowCount: 100 });
+    view.adopt({ root: "/repo", name: "repo", head: null, filter: { refs: [], path: null }, generation: 1, rowCount: 100 });
     await settle();
     expect(backend.locateCalls).toEqual([]);
     expect(view.scrollRequest).toBeNull();
