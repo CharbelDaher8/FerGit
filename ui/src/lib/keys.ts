@@ -8,6 +8,7 @@ export type KeyContext = "graph" | "files" | "diff" | "help" | "other";
 export interface KeyPress {
   key: string;
   ctrlKey: boolean;
+  shiftKey: boolean;
   altKey: boolean;
   metaKey: boolean;
   /** The press targets a text field or another editable element. */
@@ -34,7 +35,12 @@ export type Command =
   /** Show or hide the keyboard help. */
   | { kind: "help" }
   /** Esc with nothing pending: close what is open, innermost first. */
-  | { kind: "escape" };
+  | { kind: "escape" }
+  /** Open a repository in a new tab. */
+  | { kind: "newTab" }
+  | { kind: "closeTab" }
+  /** Switch to the next (`by` 1) or previous (`by` -1) tab, wrapping around. */
+  | { kind: "switchTab"; by: 1 | -1 };
 
 export interface KeyResult {
   command: Command | null;
@@ -63,7 +69,11 @@ const run = (command: Command): KeyResult => ({ command, handled: true });
  * - `g` waits `PENDING_G_TIMEOUT_MS` for a second `g`;
  * - Esc cancels a pending count or `g`, and otherwise becomes `escape`;
  * - presses with Alt or Meta, into editable elements, or of lone modifier keys are ignored, and Ctrl
- *   only means something with d, u, f and b.
+ *   only means something with d, u, f and b, and with the tab keys below.
+ *
+ * Tabs, everywhere (editable elements and the help included), like a browser's: Ctrl+T opens a
+ * repository in a new tab, Ctrl+W closes the tab, Ctrl+Tab and Ctrl+Shift+Tab switch to the next
+ * and previous tab.
  *
  * Keymap per context:
  * - graph: j/k and ↓/↑ move, gg/G/Home/End go to an end, {n}G/{n}gg to row n, Ctrl+d/u/f/b and
@@ -92,7 +102,13 @@ export class KeyInterpreter {
 
   press(input: KeyPress, now: number): KeyResult {
     const { key, context } = input;
-    if (input.altKey || input.metaKey || input.editable || MODIFIER_KEYS.has(key)) return IGNORED;
+    if (input.altKey || input.metaKey || MODIFIER_KEYS.has(key)) return IGNORED;
+    const tabCommand = input.ctrlKey ? tabShortcut(key, input.shiftKey) : null;
+    if (tabCommand) {
+      this.#clear();
+      return run(tabCommand);
+    }
+    if (input.editable) return IGNORED;
     this.expire(now);
 
     if (key === "Escape") {
@@ -204,5 +220,19 @@ export class KeyInterpreter {
   #clear(): void {
     this.#count = "";
     this.#gPressedAt = null;
+  }
+}
+
+/** The tab command `key` means with Ctrl held, if any. */
+function tabShortcut(key: string, shift: boolean): Command | null {
+  if (key === "Tab") return { kind: "switchTab", by: shift ? -1 : 1 };
+  if (shift) return null;
+  switch (key.toLowerCase()) {
+    case "t":
+      return { kind: "newTab" };
+    case "w":
+      return { kind: "closeTab" };
+    default:
+      return null;
   }
 }
