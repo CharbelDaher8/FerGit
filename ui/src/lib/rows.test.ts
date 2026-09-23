@@ -54,7 +54,7 @@ function requestedStarts(): number[] {
 }
 
 function store(generation: number, rowCount: number): RowStore {
-  return new RowStore({ root: "/repo", name: "repo", head: null, branch: "main", state: { kind: "clean" }, generation, rowCount }, client);
+  return new RowStore({ root: "/repo", name: "repo", head: null, filter: { refs: [], path: null }, branch: "main", state: { kind: "clean" }, generation, rowCount }, client);
 }
 
 beforeEach(() => {
@@ -174,7 +174,7 @@ describe("RowStore generations", () => {
   it("discards a page from an older generation and requests it again", async () => {
     const rows = store(1, 1000);
     rows.setViewport(0, 40);
-    rows.adopt({ root: "/repo", name: "repo", head: null, branch: "main", state: { kind: "clean" }, generation: 2, rowCount: 1000 });
+    rows.adopt({ root: "/repo", name: "repo", head: null, filter: { refs: [], path: null }, branch: "main", state: { kind: "clean" }, generation: 2, rowCount: 1000 });
     // Both pages are still in flight, so nothing is requested twice.
     expect(requestedStarts()).toEqual([0, PAGE_SIZE]);
 
@@ -188,7 +188,7 @@ describe("RowStore generations", () => {
     const rows = store(1, 1000);
     rows.setViewport(0, 40);
     await answerAll(1, 1000);
-    rows.adopt({ root: "/repo", name: "repo", head: null, branch: "main", state: { kind: "clean" }, generation: 1, rowCount: 1000 });
+    rows.adopt({ root: "/repo", name: "repo", head: null, filter: { refs: [], path: null }, branch: "main", state: { kind: "clean" }, generation: 1, rowCount: 1000 });
     expect(rows.get(0)?.id).toBe("g1-r0");
     expect(backend.requests).toHaveLength(0);
   });
@@ -197,7 +197,7 @@ describe("RowStore generations", () => {
     const rows = store(1, 1000);
     rows.setViewport(400, 440);
     await answerAll(1, 1000);
-    rows.adopt({ root: "/repo", name: "repo", head: null, branch: "main", state: { kind: "clean" }, generation: 3, rowCount: 1001 });
+    rows.adopt({ root: "/repo", name: "repo", head: null, filter: { refs: [], path: null }, branch: "main", state: { kind: "clean" }, generation: 3, rowCount: 1001 });
     expect(rows.total).toBe(1001);
     expect(rows.get(400)).toBeUndefined();
     expect(requestedStarts()).toEqual([400, 600]);
@@ -208,15 +208,15 @@ describe("RowStore generations", () => {
   it("tells its owner about a newer generation while the old rows are still readable", async () => {
     const seen: (string | undefined)[] = [];
     const rows: RowStore = new RowStore(
-      { root: "/repo", name: "repo", head: null, branch: "main", state: { kind: "clean" }, generation: 1, rowCount: 1000 },
+      { root: "/repo", name: "repo", head: null, filter: { refs: [], path: null }, branch: "main", state: { kind: "clean" }, generation: 1, rowCount: 1000 },
       client,
       () => seen.push(rows.get(0)?.id),
     );
     rows.setViewport(0, 40);
     await answerAll(1, 1000);
-    rows.adopt({ root: "/repo", name: "repo", head: null, branch: "main", state: { kind: "clean" }, generation: 1, rowCount: 1000 });
+    rows.adopt({ root: "/repo", name: "repo", head: null, filter: { refs: [], path: null }, branch: "main", state: { kind: "clean" }, generation: 1, rowCount: 1000 });
     expect(seen).toEqual([]);
-    rows.adopt({ root: "/repo", name: "repo", head: null, branch: "main", state: { kind: "clean" }, generation: 2, rowCount: 1000 });
+    rows.adopt({ root: "/repo", name: "repo", head: null, filter: { refs: [], path: null }, branch: "main", state: { kind: "clean" }, generation: 2, rowCount: 1000 });
     expect(seen).toEqual(["g1-r0"]);
     expect(rows.get(0)).toBeUndefined();
   });
@@ -226,7 +226,7 @@ describe("RowStore generations", () => {
     rows.setViewport(0, 40);
     let woken = false;
     void rows.whenLoaded(0, 40).then(() => (woken = true));
-    rows.adopt({ root: "/repo", name: "repo", head: null, branch: "main", state: { kind: "clean" }, generation: 2, rowCount: 1000 });
+    rows.adopt({ root: "/repo", name: "repo", head: null, filter: { refs: [], path: null }, branch: "main", state: { kind: "clean" }, generation: 2, rowCount: 1000 });
     await settle();
     expect(woken).toBe(true);
   });
@@ -235,7 +235,7 @@ describe("RowStore generations", () => {
     const rows = store(1, 1000);
     rows.setViewport(0, 40);
     await answer(backend.requests.shift()!, 2, 1000);
-    rows.adopt({ root: "/repo", name: "repo", head: null, branch: "main", state: { kind: "clean" }, generation: 1, rowCount: 5 });
+    rows.adopt({ root: "/repo", name: "repo", head: null, filter: { refs: [], path: null }, branch: "main", state: { kind: "clean" }, generation: 1, rowCount: 5 });
     expect(rows.generation).toBe(2);
     expect(rows.total).toBe(1000);
     expect(rows.get(0)?.id).toBe("g2-r0");

@@ -71,6 +71,10 @@
   --lane-7: #bf3989;
 
   --shadow: rgb(0 0 0 / 0.25);
+
+  /* Rows the find bar found, and the current one's marker. */
+  --find: #1a7f37;
+  --find-bg: #e6f6ea;
 }
 
 :root[data-theme="dark"] {
@@ -132,6 +136,9 @@
   --lane-7: #f778ba;
 
   --shadow: rgb(0 0 0 / 0.6);
+
+  --find: #3fb950;
+  --find-bg: rgba(46, 160, 67, 0.16);
 }
 
 *,

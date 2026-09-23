@@ -11,7 +11,10 @@ use std::sync::Arc;
 
 use fergit_core::repo::RepoError;
 use fergit_core::session::{Session, Sessions};
-use fergit_core::{CommitDetails, DiffSide, FileChange, FileDiff, Oid, RepoInfo, RowLocation, RowsPage, SessionId};
+use fergit_core::{
+    CommitDetails, DiffSide, FileChange, FileDiff, Filter, Oid, RefLabel, RepoInfo, RowLocation, RowsPage, SearchResult,
+    SessionId,
+};
 use serde::Serialize;
 use specta_typescript::Typescript;
 use tauri::{AppHandle, Manager, State};
@@ -187,6 +190,32 @@ async fn file_diff(
     blocking(move || session.file_diff(from, to, &path, old_path.as_deref())).await
 }
 
+/// The rows of a session's current snapshot whose commit message, author or id `query` matches,
+/// ignoring case. Check `generation`: rows of an older snapshot mean nothing now.
+#[tauri::command]
+#[specta::specta]
+async fn search(state: State<'_, AppState>, session: SessionId, query: String) -> Result<SearchResult, AppError> {
+    let session = state.session(session)?;
+    blocking(move || session.search(&query)).await
+}
+
+/// Shows only the commits `filter` selects in a session (the default filter shows all). Returns
+/// what `refresh` would: the generation changes unless the filter was already applied.
+#[tauri::command]
+#[specta::specta]
+async fn set_filter(state: State<'_, AppState>, session: SessionId, filter: Filter) -> Result<RepoInfo, AppError> {
+    let session = state.session(session)?;
+    blocking(move || session.set_filter(filter)).await
+}
+
+/// Every ref of a session's repository, for choosing what to filter on.
+#[tauri::command]
+#[specta::specta]
+async fn refs(state: State<'_, AppState>, session: SessionId) -> Result<Vec<RefLabel>, AppError> {
+    let session = state.session(session)?;
+    blocking(move || Ok::<_, RepoError>(session.refs())).await
+}
+
 fn specta_builder() -> Builder<tauri::Wry> {
     Builder::<tauri::Wry>::new()
         .commands(collect_commands![
@@ -198,6 +227,9 @@ fn specta_builder() -> Builder<tauri::Wry> {
             commit_details,
             changes,
             file_diff,
+            search,
+            set_filter,
+            refs,
             operations::run_operation,
             operations::answer_prompt,
             operations::undoable,

@@ -116,6 +116,8 @@ pub struct RepoInfo {
     pub branch: Option<String>,
     /// Whether a merge, rebase, cherry-pick or revert is in progress, and which files conflict.
     pub state: RepoState,
+    /// Which commits the snapshot shows.
+    pub filter: Filter,
 }
 
 /// What git is in the middle of. Stopping with conflicts is a normal state, not an error: the user
@@ -172,6 +174,66 @@ pub struct ConflictFile {
     /// The file on disk no longer has conflict markers (or was deleted): continuing will take it
     /// as it is.
     pub resolved: bool,
+}
+
+/// Which commits a snapshot shows. The default shows every commit.
+///
+/// A filtered snapshot is laid out as a history of its own: each shown commit's lines lead to its
+/// nearest shown ancestors. The uncommitted-changes row is shown only while HEAD's commit is, and
+/// a stash only while its base commit is.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+#[serde(rename_all = "camelCase")]
+pub struct Filter {
+    /// Full names of refs (`refs/heads/main`, `refs/remotes/origin/main`, `refs/tags/v1`, or
+    /// `HEAD`): only commits reachable from one of them are shown. Empty shows commits of every ref.
+    /// Names matching no ref are ignored, so if none matches, nothing is shown.
+    pub refs: Vec<String>,
+    /// A file or directory, `/`-separated and relative to the repository root: only commits that
+    /// change it are shown, following a merge down the side it took the path's content from, like
+    /// `git log -- <path>`. `None` or blank shows commits whatever they change.
+    pub path: Option<String>,
+}
+
+impl Filter {
+    /// The same filter written one way: refs sorted without duplicates, and the path trimmed, with
+    /// `\` read as `/`, without leading `./` or `/` or trailing `/`, and `None` if nothing is left.
+    pub fn normalized(mut self) -> Filter {
+        self.refs.sort();
+        self.refs.dedup();
+        self.path = self.path.and_then(|path| {
+            let path = path.trim().replace('\\', "/");
+            let mut path = path.as_str();
+            while let Some(rest) = path.strip_prefix("./").or_else(|| path.strip_prefix('/')) {
+                path = rest;
+            }
+            let path = path.trim_end_matches('/');
+            (!path.is_empty() && path != ".").then(|| path.to_owned())
+        });
+        self
+    }
+
+    /// Whether the filter shows every commit.
+    pub fn is_empty(&self) -> bool {
+        self.refs.is_empty() && self.path.is_none()
+    }
+}
+
+/// The rows of one snapshot that a search finds.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+#[serde(rename_all = "camelCase")]
+pub struct SearchResult {
+    pub generation: Generation,
+    /// Indices of the rows found, in order; only the first 10 000 ([`SearchResult::MAX_ROWS`]).
+    pub rows: Vec<u32>,
+    /// How many rows were found, including those beyond `rows`.
+    pub total: u32,
+}
+
+impl SearchResult {
+    /// The most rows one result lists; a query matching more is too vague to step through.
+    pub const MAX_ROWS: usize = 10_000;
 }
 
 /// A contiguous run of graph rows from one snapshot.
@@ -654,6 +716,23 @@ mod tests {
         let oid: Oid = hex.parse().unwrap();
         assert_eq!(oid.to_string(), hex);
         assert_eq!(serde_json::to_string(&oid).unwrap(), format!("\"{hex}\""));
+    }
+
+    #[test]
+    fn filters_normalize_paths_and_refs() {
+        let filter = |refs: &[&str], path: Option<&str>| Filter {
+            refs: refs.iter().map(|r| r.to_string()).collect(),
+            path: path.map(str::to_owned),
+        };
+        assert_eq!(
+            filter(&["refs/heads/b", "refs/heads/a", "refs/heads/b"], Some(" ./src\\lib/ ")).normalized(),
+            filter(&["refs/heads/a", "refs/heads/b"], Some("src/lib"))
+        );
+        for blank in ["", "  ", "/", "./", "."] {
+            assert_eq!(filter(&[], Some(blank)).normalized(), Filter::default(), "{blank:?}");
+        }
+        assert!(Filter::default().is_empty());
+        assert!(!filter(&[], Some("a")).normalized().is_empty());
     }
 
     #[test]

@@ -1,8 +1,11 @@
 // Vim-style key sequences, as a pure interpreter: key presses and a clock in, commands out. The app
 // decides which pane a press belongs to (its context) and carries the commands out there.
 
-/** Where a key press lands. `other` is any control outside the panes (buttons, the toolbar). */
-export type KeyContext = "graph" | "files" | "diff" | "help" | "other";
+/**
+ * Where a key press lands. `find` is the find bar's text field; `other` is any control outside the
+ * panes (buttons, the toolbar).
+ */
+export type KeyContext = "graph" | "files" | "diff" | "find" | "help" | "other";
 
 /** What the interpreter needs from a keyboard event. */
 export interface KeyPress {
@@ -32,6 +35,10 @@ export type Command =
   | { kind: "open" }
   /** Close the diff. */
   | { kind: "close" }
+  /** Open the find bar and focus its text field. */
+  | { kind: "find" }
+  /** Go `by` matches down (negative: up) from the selection, wrapping around. */
+  | { kind: "findNext"; by: number }
   /** Show or hide the keyboard help. */
   | { kind: "help" }
   /** Switch to the next theme mode (system, light, dark). */
@@ -62,8 +69,8 @@ export const SIDEWAYS_COLUMNS = 4;
 const MAX_COUNT_DIGITS = 7;
 const IGNORED: KeyResult = { command: null, handled: false };
 const CONSUMED: KeyResult = { command: null, handled: true };
-/** Pages moved by Ctrl+d/u/f/b. */
-const CTRL_PAGES: Record<string, number> = { d: 0.5, u: -0.5, f: 1, b: -1 };
+/** Pages moved by Ctrl+d/u/b. Ctrl+f finds, as in other desktop apps, rather than paging as in vim. */
+const CTRL_PAGES: Record<string, number> = { d: 0.5, u: -0.5, b: -1 };
 const MODIFIER_KEYS = new Set(["Shift", "Control", "Alt", "AltGraph", "Meta", "CapsLock", "OS"]);
 
 const run = (command: Command): KeyResult => ({ command, handled: true });
@@ -74,23 +81,27 @@ const run = (command: Command): KeyResult => ({ command, handled: true });
  *   start, in a diff) when no count is pending;
  * - `g` waits `PENDING_G_TIMEOUT_MS` for a second `g`;
  * - Esc cancels a pending count or `g`, and otherwise becomes `escape`;
- * - presses with Alt or Meta, into editable elements, or of lone modifier keys are ignored, and Ctrl
- *   only means something with d, u, f and b, and with the tab keys below.
+ * - presses with Alt or Meta, into editable elements (but the find bar's), or of lone modifier keys
+ *   are ignored, and Ctrl only means something with d, u, b and f, and with the tab keys below.
  *
- * Tabs, everywhere (editable elements and the help included), like a browser's: Ctrl+T opens a
- * repository in a new tab, Ctrl+W closes the tab, Ctrl+Tab and Ctrl+Shift+Tab switch to the next
- * and previous tab.
+ * Tabs, everywhere (editable elements, the find bar and the help included), like a browser's:
+ * Ctrl+T opens a repository in a new tab, Ctrl+W closes the tab, Ctrl+Tab and Ctrl+Shift+Tab switch
+ * to the next and previous tab.
  *
  * Keymap per context:
- * - graph: j/k and ↓/↑ move, gg/G/Home/End go to an end, {n}G/{n}gg to row n, Ctrl+d/u/f/b and
+ * - graph: j/k and ↓/↑ move, gg/G/Home/End go to an end, {n}G/{n}gg to row n, Ctrl+d/u/b and
  *   PageDown/PageUp page, l/Enter focus the file list, h does nothing (leftmost pane), u undoes,
  *   the menu key and Shift+F10 open the selected row's context menu;
  * - files: j/k and ↓/↑ move, gg/G/Home/End go to an end, l/Enter open, h focuses the graph, u
  *   undoes;
- * - diff: j/k scroll lines, Ctrl+d/u/f/b page, gg/G go to an end, h/l scroll sideways, 0/$ go to
+ * - diff: j/k scroll lines, Ctrl+d/u/b page, gg/G go to an end, h/l scroll sideways, 0/$ go to
  *   a line edge, q closes; arrows and other keys keep their native scrolling;
+ * - graph and files: also `/` finds, n/N go to the next/previous match (with a count);
+ * - find (typing in the find bar): Enter/Shift+Enter go to the next/previous match, and Esc; every
+ *   other key types;
  * - help and other: only `?`, `T` and Esc.
- * `?` toggles the help and `T` cycles the theme everywhere.
+ * `?` toggles the help and `T` cycles the theme everywhere but the find bar. Ctrl+f finds from
+ * everywhere but the help, the diff included.
  */
 export class KeyInterpreter {
   #count = "";
@@ -116,8 +127,14 @@ export class KeyInterpreter {
       this.#clear();
       return run(tabCommand);
     }
+    if (context === "find") return this.#findBar(input);
     if (input.editable) return IGNORED;
     this.expire(now);
+
+    if (input.ctrlKey && key.toLowerCase() === "f" && context !== "help") {
+      this.#clear();
+      return run({ kind: "find" });
+    }
 
     if (key === "Escape") {
       if (this.pending === "") return run({ kind: "escape" });
@@ -180,6 +197,18 @@ export class KeyInterpreter {
         return run({ kind: "move", by: -this.#takeCount(1) });
     }
 
+    if (context !== "diff") {
+      switch (key) {
+        case "/":
+          this.#clear();
+          return run({ kind: "find" });
+        case "n":
+          return run({ kind: "findNext", by: this.#takeCount(1) });
+        case "N":
+          return run({ kind: "findNext", by: -this.#takeCount(1) });
+      }
+    }
+
     if (context === "diff") {
       switch (key) {
         case "h":
@@ -227,6 +256,15 @@ export class KeyInterpreter {
 
     // An unrelated key drops a half-typed count.
     this.#clear();
+    return IGNORED;
+  }
+
+  /** Keys typed into the find bar: only Enter, Esc and Ctrl+f mean something; the rest is text. */
+  #findBar(input: KeyPress): KeyResult {
+    this.#clear();
+    if (input.ctrlKey) return input.key.toLowerCase() === "f" ? run({ kind: "find" }) : IGNORED;
+    if (input.key === "Enter") return run({ kind: "findNext", by: input.shiftKey ? -1 : 1 });
+    if (input.key === "Escape") return run({ kind: "escape" });
     return IGNORED;
   }
 

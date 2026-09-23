@@ -11,7 +11,7 @@ use proptest::test_runner::TestCaseError;
 
 /// Parent lists for nodes `0..n`, children first. Mostly linear, with merges, octopus merges,
 /// roots, duplicate parents and parents that are never pushed.
-fn dag() -> impl Strategy<Value = Vec<Vec<u32>>> {
+pub(crate) fn dag() -> impl Strategy<Value = Vec<Vec<u32>>> {
     #[derive(Debug, Clone, Copy)]
     enum Parent {
         /// `offset` rows below the child (never pushed if that runs past the end).
@@ -57,7 +57,7 @@ fn layout_with<Id: Copy + Eq>(dag: &[Vec<u32>], label: impl Fn(u32) -> Id) -> Ve
         .collect()
 }
 
-fn layout(dag: &[Vec<u32>]) -> Vec<GraphRow> {
+pub(crate) fn layout(dag: &[Vec<u32>]) -> Vec<GraphRow> {
     layout_with(dag, |id| id)
 }
 
@@ -98,7 +98,7 @@ proptest! {
     }
 }
 
-fn check_invariants(dag: &[Vec<u32>], rows: &[GraphRow]) -> Result<(), TestCaseError> {
+pub(crate) fn check_invariants(dag: &[Vec<u32>], rows: &[GraphRow]) -> Result<(), TestCaseError> {
     prop_assert_eq!(rows.len(), dag.len());
     let row_of = |id: u32| Some(id as usize).filter(|&i| i < dag.len());
 

@@ -91,6 +91,19 @@ export function restoreAnchor(
   return { offset, selected, compared };
 }
 
+/**
+ * Where to scroll so that row `selection` of a newer snapshot sits where the anchor's selected row
+ * was on screen, pulled into the viewport (`height` px) if it was outside it. For changes that
+ * reshuffle the rows (a filter applied or cleared), after which the old top row means little.
+ * `null` if there is no selection to follow: none was made, or its row is gone or unknown.
+ */
+export function followSelection(anchor: Anchor, selection: number | null | undefined, height: number): number | null {
+  if (anchor.selected === null || selection === null || selection === undefined) return null;
+  const onScreen = anchor.selected * ROW_HEIGHT - anchor.offset;
+  const kept = Math.max(0, Math.min(onScreen, height - ROW_HEIGHT));
+  return Math.max(0, selection * ROW_HEIGHT - kept);
+}
+
 /** Rows shown in place of the store's while the view re-anchors after a change. */
 interface Frozen {
   generation: number;
@@ -128,6 +141,8 @@ export class RepoView {
   #pendingReveal: number | null = null;
   /** Identifies the latest change being re-anchored; older runs give up when it moves on. */
   #transition = 0;
+  /** The next change re-anchors on the selection rather than the top row. */
+  #followNext = false;
 
   constructor(info: RepoInfo, client: Pick<RepoClient, "rows" | "locate">) {
     this.#client = client;
@@ -251,6 +266,14 @@ export class RepoView {
     this.#rows.adopt(info);
   }
 
+  /**
+   * Makes the next move to a newer snapshot keep the selected row in view (see `followSelection`)
+   * instead of the top row. Call just before changing the filter, which reshuffles the rows.
+   */
+  followSelectionOnNextChange(follow = true): void {
+    this.#followNext = follow;
+  }
+
   /** The row showing `id` in the snapshot on screen; `null` if none does or the snapshot is changing. */
   async find(id: Oid): Promise<number | null> {
     const location = await this.#client.locate(id);
@@ -295,10 +318,12 @@ export class RepoView {
         if (this.#frozen === frozen) this.#frozen = null;
       }, FREEZE_LIMIT_MS);
     }
-    void this.#reanchor(anchor, token);
+    const follow = this.#followNext;
+    this.#followNext = false;
+    void this.#reanchor(anchor, token, follow);
   }
 
-  async #reanchor(anchor: Anchor, token: number): Promise<void> {
+  async #reanchor(anchor: Anchor, token: number, follow: boolean): Promise<void> {
     const locate = (id: Oid | null): Promise<RowLocation | undefined> =>
       id === null ? Promise.resolve(undefined) : this.#client.locate(id);
     const locations = await Promise.all([locate(anchor.topId), locate(anchor.selectedId), locate(anchor.comparedId)]);
@@ -309,7 +334,8 @@ export class RepoView {
     const [top, selection, comparison] = locations;
     const total = this.#rows.total;
     const restored = restoreAnchor(anchor, top?.row, selection?.row, comparison?.row);
-    const offset = Math.max(0, Math.min(restored.offset, total * ROW_HEIGHT - this.#height));
+    const followed = follow ? followSelection(anchor, selection?.row, this.#height) : null;
+    const offset = Math.max(0, Math.min(followed ?? restored.offset, total * ROW_HEIGHT - this.#height));
     const { first, end } = rowWindow(offset, this.#height, total);
     this.#rows.setViewport(first, end);
     await Promise.race([this.#rows.whenLoaded(first, end), delay(LOAD_WAIT_MS)]);

@@ -4,13 +4,16 @@ import {
   type DiffSide,
   type FileChange,
   type FileDiff,
+  type Filter,
   type OpId,
   type OpOutcome,
   type Oid,
   type Operation,
+  type RefLabel,
   type RepoInfo,
   type RowLocation,
   type RowsPage,
+  type SearchResult,
   type SessionId,
   type Undoable,
 } from "./bindings";
@@ -26,6 +29,12 @@ export interface RepoClient {
   commitDetails(id: Oid): Promise<CommitDetails | null>;
   changes(from: DiffSide | null, to: DiffSide): Promise<FileChange[]>;
   fileDiff(from: DiffSide | null, to: DiffSide, path: string, oldPath: string | null): Promise<FileDiff>;
+  /** The rows of the current snapshot that `query` finds. */
+  search(query: string): Promise<SearchResult>;
+  /** Shows only the commits `filter` selects; answers like `refresh`. */
+  setFilter(filter: Filter): Promise<RepoInfo>;
+  /** Every ref of the repository, for choosing what to filter on. */
+  refs(): Promise<RefLabel[]>;
   /** Runs `op` as request `id`; progress arrives as `opProgress` events naming this session. */
   runOperation(id: OpId, op: Operation): Promise<OpOutcome>;
   /** What undo would restore now in this repository. */
@@ -54,6 +63,9 @@ export function repoClient(session: SessionId): RepoClient {
     commitDetails: (id) => call(() => commands.commitDetails(session, id)),
     changes: (from, to) => call(() => commands.changes(session, from, to)),
     fileDiff: (from, to, path, oldPath) => call(() => commands.fileDiff(session, from, to, path, oldPath)),
+    search: (query) => call(() => commands.search(session, query)),
+    setFilter: (filter) => call(() => commands.setFilter(session, filter)),
+    refs: () => call(() => commands.refs(session)),
     runOperation: (id, op) => call(() => commands.runOperation(session, id, op)),
     undoable: () => call(() => commands.undoable(session)),
     close: async () => {

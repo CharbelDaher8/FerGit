@@ -5,6 +5,7 @@
   import { followCredentialPrompts, perform } from "./lib/actions";
   import Dialog from "./lib/Dialog.svelte";
   import { dialogs } from "./lib/dialogs.svelte";
+  import { describeFilter, isFiltered } from "./lib/filter";
   import KeyHelp from "./lib/KeyHelp.svelte";
   import { KeyInterpreter, PENDING_G_TIMEOUT_MS, type Command, type KeyContext } from "./lib/keys";
   import OperationStatus from "./lib/OperationStatus.svelte";
@@ -63,12 +64,13 @@
   function keyContext(target: EventTarget | null): KeyContext {
     if (helpOpen) return "help";
     const element = target instanceof Element ? target : null;
+    if (element?.closest(".find-bar")) return element.matches("input") ? "find" : "other";
     if (element?.closest(".details")) {
       // Other controls in the panel (parent links, "Show all") keep their own keys, Enter included.
       const control = element.closest("button, a, input, select, textarea");
       return control && !control.matches("button.file") ? "other" : "files";
     }
-    if (element?.closest(".tabstrip, .topbar, .banner, .empty, .failure")) return "other";
+    if (element?.closest(".tabstrip, .topbar, .banner, .empty, .failure, .filter-panel")) return "other";
     return tabs.active?.inspector.diff ? "diff" : "graph";
   }
 
@@ -85,7 +87,7 @@
     switch (command.kind) {
       case "escape":
         if (helpOpen) helpOpen = false;
-        else activePane?.escape();
+        else activePane?.escape(context);
         return;
       case "help":
         helpOpen = !helpOpen;
@@ -245,6 +247,27 @@
     <div class="topbar">
       <span class="repo-root" title={tab.info.root}>{tab.info.root}</span>
       <span class="row-count">{tab.view.total.toLocaleString()} rows</span>
+      {#if isFiltered(tab.info.filter)}
+        <span class="filter-chip" title="Showing only these commits">
+          <span class="filter-text">{describeFilter(tab.info.filter)}</span>
+          <button
+            class="icon-button"
+            aria-label="Show all commits"
+            title="Show all commits"
+            onclick={() => activePane?.applyFilter({ refs: [], path: null })}>×</button
+          >
+        </span>
+      {/if}
+      <button
+        class="button"
+        class:active={isFiltered(tab.info.filter)}
+        aria-expanded={tab.filterOpen}
+        onclick={() => (tab.filterOpen = !tab.filterOpen)}
+        title="Show only some branches, or commits changing a path"
+      >
+        Filter…
+      </button>
+      <button class="button" onclick={() => void activePane?.openFind()} title="Find commits (Ctrl+F, /)">Find</button>
       <label class="toggle" title="Label where branches split and join on the graph (names are inferred)">
         <input type="checkbox" bind:checked={settings.showRelations} />
         Relationships
@@ -445,6 +468,40 @@
     color: var(--fg-subtle);
     font-size: 12px;
     font-variant-numeric: tabular-nums;
+  }
+
+  .button.active {
+    border-color: var(--focus);
+    color: var(--focus);
+  }
+
+  .filter-chip {
+    display: flex;
+    flex: 0 1 auto;
+    align-items: center;
+    gap: 2px;
+    min-width: 0;
+    max-width: 280px;
+    padding: 0 0 0 8px;
+    border: 1px solid var(--focus);
+    border-radius: 12px;
+    background: color-mix(in srgb, var(--focus) 10%, transparent);
+    color: var(--fg);
+    font-size: 12px;
+  }
+
+  .filter-text {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .filter-chip .icon-button {
+    width: 20px;
+    height: 20px;
+    border-radius: 10px;
+    font-size: 14px;
   }
 
   .theme-button {

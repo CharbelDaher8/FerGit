@@ -1,5 +1,6 @@
-import type { RepoInfo, SessionId } from "./bindings";
+import type { Filter, RepoInfo, SessionId } from "./bindings";
 import type { RepoClient } from "./client";
+import { Finder } from "./find.svelte";
 import { Inspector } from "./inspector.svelte";
 import { Operations } from "./operations.svelte";
 import type { SavedTabs } from "./settings.svelte";
@@ -20,8 +21,8 @@ export interface TabsMemory {
 
 /**
  * One open repository: its rows, scroll position and selection (the view), what is shown about the
- * selection (the inspector), the operations running on it, and whether the details panel is open.
- * All of it stays as it is while other tabs are in front.
+ * selection (the inspector), the operations running on it, its find bar and filter, and whether the
+ * details panel is open. All of it stays as it is while other tabs are in front.
  */
 export class Tab {
   readonly session: SessionId;
@@ -29,6 +30,7 @@ export class Tab {
   readonly view: RepoView;
   readonly inspector: Inspector;
   readonly operations: Operations;
+  readonly finder: Finder;
   #info = $state.raw<RepoInfo>() as RepoInfo;
   /**
    * Counts refresh results and change events taken in, including those that leave the generation
@@ -38,6 +40,8 @@ export class Tab {
   /** True while a refresh is on its way. */
   refreshing = $state(false);
   detailsOpen = $state(true);
+  /** Whether the filter picker is open. */
+  filterOpen = $state(false);
 
   constructor(session: SessionId, info: RepoInfo, client: RepoClient) {
     this.session = session;
@@ -46,6 +50,7 @@ export class Tab {
     this.view = new RepoView(info, client);
     this.inspector = new Inspector(client);
     this.operations = new Operations(client, (info) => this.adopt(info));
+    this.finder = new Finder(() => this.view, client);
   }
 
   /** As of the newest open, refresh or change event. */
@@ -64,6 +69,18 @@ export class Tab {
     }
   }
 
+  /**
+   * Shows only the commits `filter` selects (no refs and no path: all of them). The rows change
+   * like after a refresh, except that the selected commit, if still shown, stays in view.
+   */
+  async setFilter(filter: Filter): Promise<void> {
+    this.view.followSelectionOnNextChange();
+    const info = await this.client.setFilter(filter);
+    // Nothing changed (the same filter): don't leave the next refresh following the selection.
+    if (info.generation === this.#info.generation) this.view.followSelectionOnNextChange(false);
+    this.adopt(info);
+  }
+
   /** Takes in a refresh result or change event; one older than what is shown is ignored. */
   adopt(info: RepoInfo): void {
     if (info.generation < this.#info.generation) return;
@@ -75,6 +92,7 @@ export class Tab {
   /** Stops the inspector's timers and closes the backend session. */
   close(): Promise<void> {
     this.inspector.dispose();
+    this.finder.hide();
     return this.client.close();
   }
 }

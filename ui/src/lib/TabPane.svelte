@@ -1,15 +1,17 @@
 <!--
-  One tab's repository: the graph, the diff opened over it, the details panel, and the graph's
-  context menu. Every open tab keeps its pane mounted, hidden while another tab is in front, so
+  One tab's repository: the graph, the diff opened over it, the details panel, the find bar, the
+  filter picker and the graph's context menu. Every open tab keeps its pane mounted, hidden while another tab is in front, so
   switching back finds the graph scrolled, the files focused and the diff open exactly as they were.
 -->
 <script lang="ts">
   import { tick, untrack } from "svelte";
   import { perform } from "./actions";
-  import type { FileChange } from "./bindings";
+  import type { FileChange, Filter } from "./bindings";
   import ContextMenu from "./ContextMenu.svelte";
   import DetailsPanel from "./DetailsPanel.svelte";
   import DiffView from "./DiffView.svelte";
+  import FilterPanel from "./FilterPanel.svelte";
+  import FindBar from "./FindBar.svelte";
   import GraphView from "./GraphView.svelte";
   import { subjectOf, type FileList } from "./inspector.svelte";
   import type { Command, KeyContext } from "./keys";
@@ -29,6 +31,7 @@
   let graphView = $state<ReturnType<typeof GraphView>>();
   let detailsPanel = $state<ReturnType<typeof DetailsPanel>>();
   let diffView = $state<ReturnType<typeof DiffView>>();
+  let findBar = $state<ReturnType<typeof FindBar>>();
   /** The open context menu; where focus was before it opened goes back there when it closes. */
   let menu = $state.raw<{ x: number; y: number; entries: MenuEntry[]; returnFocus: HTMLElement | null } | null>(null);
 
@@ -73,6 +76,33 @@
     untrack(() => inspector.show(subject, head, version));
   });
 
+  // The finder searches again whenever the rows on screen move to another snapshot (a refresh, a
+  // filter), so its matches are always rows of what is shown.
+  $effect(() => {
+    void tab.view.generation;
+    untrack(() => tab.finder.sync());
+  });
+
+  /** Opens the find bar (closing the diff over the graph) and focuses it. */
+  export async function openFind(): Promise<void> {
+    if (tab.inspector.diff) closeDiff();
+    tab.finder.show();
+    await tick();
+    findBar?.focus();
+  }
+
+  function closeFind(): void {
+    tab.finder.hide();
+    graphView?.focus();
+  }
+
+  /** Applies `filter` to this tab, closing the filter picker. */
+  export function applyFilter(filter: Filter): void {
+    tab.filterOpen = false;
+    void tab.setFilter(filter);
+    graphView?.focus();
+  }
+
   function openFile(list: FileList, file: FileChange): void {
     if (!tab.inspector.diff) {
       focusBeforeDiff = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -92,10 +122,16 @@
     else graphView?.focus();
   }
 
-  /** Esc: closes the diff, or else leaves compare mode. */
-  export function escape(): void {
-    if (tab.inspector.diff) closeDiff();
+  /**
+   * Esc, pressed in `context`: closes the find bar being typed in, else the filter picker, else the
+   * diff, else leaves compare mode, else closes the find bar.
+   */
+  export function escape(context: KeyContext): void {
+    if (context === "find") closeFind();
+    else if (tab.filterOpen) tab.filterOpen = false;
+    else if (tab.inspector.diff) closeDiff();
     else if (tab.view.compared !== null) tab.view.compare(null);
+    else if (tab.finder.open) closeFind();
   }
 
   /** Carries out a key command that belongs to a pane, in the pane the key was pressed in. */
@@ -110,6 +146,12 @@
         return;
       case "menu":
         graphView?.openMenu();
+        return;
+      case "find":
+        void openFind();
+        return;
+      case "findNext":
+        void tab.finder.step(command.by);
         return;
       case "focus":
         if (command.pane === "files") void focusFileList();
@@ -154,9 +196,13 @@
       <GraphView
         bind:this={graphView}
         view={tab.view}
+        highlight={tab.finder.open ? tab.finder : undefined}
         onactivate={() => (tab.detailsOpen = true)}
         onmenu={openMenu}
       />
+      {#if tab.finder.open}
+        <FindBar bind:this={findBar} finder={tab.finder} onclose={closeFind} />
+      {/if}
     </div>
     {#if tab.inspector.diff}
       <div class="diff-layer">
@@ -173,6 +219,14 @@
       inspector={tab.inspector}
       onopen={openFile}
       onclose={() => (tab.detailsOpen = false)}
+    />
+  {/if}
+  {#if tab.filterOpen}
+    <FilterPanel
+      current={tab.info.filter}
+      loadRefs={() => tab.client.refs()}
+      onapply={applyFilter}
+      onclose={() => (tab.filterOpen = false)}
     />
   {/if}
   {#if menu}
@@ -200,6 +254,7 @@
   }
 
   .graph-layer {
+    position: relative;
     display: flex;
     flex: 1;
     min-width: 0;

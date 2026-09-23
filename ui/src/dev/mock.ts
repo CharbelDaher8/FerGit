@@ -164,6 +164,7 @@ let info: RepoInfo = {
   name: "relations-demo",
   generation: 1,
   rowCount: rows.length,
+  filter: { refs: [], path: null },
   head: rows[0].id,
   branch: "main",
   state: { kind: "clean" },
@@ -216,6 +217,17 @@ mockIPC((command, payload) => {
           : { kind: "done", info };
       return new Promise((resolve) => setTimeout(() => resolve(outcome), 800));
     }
+    case "search": {
+      // Messages only; the mock has no authors worth finding.
+      const query = String(args.query).trim().toLowerCase();
+      const found = query ? rows.flatMap((row, i) => (row.summary.toLowerCase().includes(query) ? [i] : [])) : [];
+      return { generation: 1, rows: found, total: found.length };
+    }
+    case "set_filter":
+      // Shows the filter in the toolbar without filtering: the mock's rows are drawn by hand.
+      return { ...info, filter: args.filter };
+    case "refs":
+      return rows.flatMap((row) => row.refs).filter((ref) => ref.kind !== "stash");
     case "plugin:event|listen":
       return 1;
     default:

@@ -1,7 +1,15 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import type { RepoInfo, Row, RowLocation, RowsPage } from "./bindings";
 import { ROW_HEIGHT } from "./graph";
-import { RepoView, captureAnchor, restoreAnchor, rowWindow, OVERSCAN, type Anchor } from "./view.svelte";
+import {
+  RepoView,
+  captureAnchor,
+  followSelection,
+  restoreAnchor,
+  rowWindow,
+  OVERSCAN,
+  type Anchor,
+} from "./view.svelte";
 
 /**
  * A fake backend holding one snapshot (a generation and the ids of its rows, in order). Commands
@@ -55,7 +63,7 @@ function ids(count: number, prefix = "c"): string[] {
 function snapshot(generation: number, rowIds: string[]): RepoInfo {
   backend.generation = generation;
   backend.ids = rowIds;
-  return { root: "/repo", name: "repo", head: null, branch: "main", state: { kind: "clean" }, generation, rowCount: rowIds.length };
+  return { root: "/repo", name: "repo", head: null, filter: { refs: [], path: null }, branch: "main", state: { kind: "clean" }, generation, rowCount: rowIds.length };
 }
 
 /** Lets pending commands, their follow-ups and re-anchoring run. */
@@ -126,6 +134,27 @@ describe("anchor math", () => {
     expect(restoreAnchor(anchor(70, 12), 2, null).selected).toBeNull();
     expect(restoreAnchor(anchor(70, 12), 2, undefined).selected).toBe(12);
     expect(restoreAnchor(anchor(70, null), 2, undefined).selected).toBeNull();
+  });
+
+  it("follows the selection to its new row, keeping it where it was on screen", () => {
+    // Selected row 8 sat 8 * ROW_HEIGHT - 70 px below the viewport's top.
+    const onScreen = 8 * ROW_HEIGHT - 70;
+    expect(followSelection(anchor(70, 8), 40, HEIGHT)).toBe(40 * ROW_HEIGHT - onScreen);
+    // Near the top the offset can't go negative.
+    expect(followSelection(anchor(70, 8), 1, HEIGHT)).toBe(0);
+  });
+
+  it("pulls a selection that was off screen into view", () => {
+    // Row 50 was below a viewport showing rows 0..9: it lands on the viewport's last row.
+    expect(followSelection(anchor(0, 50), 60, HEIGHT)).toBe(61 * ROW_HEIGHT - HEIGHT);
+    // Row 1 was above a viewport scrolled far down: it lands on the first row.
+    expect(followSelection(anchor(80 * ROW_HEIGHT, 1), 30, HEIGHT)).toBe(30 * ROW_HEIGHT);
+  });
+
+  it("has nothing to follow without a selection or its row", () => {
+    expect(followSelection(anchor(70, null), 3, HEIGHT)).toBeNull();
+    expect(followSelection(anchor(70, 12), null, HEIGHT)).toBeNull();
+    expect(followSelection(anchor(70, 12), undefined, HEIGHT)).toBeNull();
   });
 
   it("computes the row window with overscan, clamped", () => {
@@ -235,9 +264,36 @@ describe("RepoView re-anchoring", () => {
     expect(view.selected).toBe(11);
   });
 
+  it("keeps the selection in view when asked, as when a filter is applied and cleared", async () => {
+    // Rows 0..99, scrolled to show 40..49, row 45 selected.
+    const view = await openView(40 * ROW_HEIGHT, 45);
+    // A filter keeps every fifth commit: c45 is now row 9.
+    view.followSelectionOnNextChange();
+    view.adopt(snapshot(2, ids(100).filter((_, i) => i % 5 === 0)));
+    await settle();
+    expect(view.selected).toBe(9);
+    expect(view.scrollRequest).toEqual({ offset: 4 * ROW_HEIGHT });
+
+    // Clearing it: c45 goes back to row 45, in the same place on screen.
+    view.followSelectionOnNextChange();
+    view.adopt(snapshot(3, ids(100)));
+    await settle();
+    expect(view.selected).toBe(45);
+    expect(view.scrollRequest).toEqual({ offset: 40 * ROW_HEIGHT });
+  });
+
+  it("follows the selection only for the change it was asked for", async () => {
+    const view = await openView(70, 10);
+    view.followSelectionOnNextChange();
+    view.followSelectionOnNextChange(false);
+    view.adopt(snapshot(2, ["new1", "new0", ...ids(100)]));
+    await settle();
+    expect(view.scrollRequest).toEqual({ offset: 70 + 2 * ROW_HEIGHT });
+  });
+
   it("does nothing on a refresh with the same generation", async () => {
     const view = await openView(70, 10);
-    view.adopt({ root: "/repo", name: "repo", head: null, branch: "main", state: { kind: "clean" }, generation: 1, rowCount: 100 });
+    view.adopt({ root: "/repo", name: "repo", head: null, filter: { refs: [], path: null }, branch: "main", state: { kind: "clean" }, generation: 1, rowCount: 100 });
     await settle();
     expect(backend.locateCalls).toEqual([]);
     expect(view.scrollRequest).toBeNull();

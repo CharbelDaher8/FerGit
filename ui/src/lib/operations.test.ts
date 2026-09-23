@@ -21,7 +21,7 @@ const client = {
 };
 
 const TIP = "d".repeat(40);
-const INFO: RepoInfo = { root: "/r", name: "r", generation: 7, rowCount: 3, head: null, branch: "main", state: { kind: "clean" } };
+const INFO: RepoInfo = { root: "/r", name: "r", generation: 7, rowCount: 3, head: null, branch: "main", state: { kind: "clean" }, filter: { refs: [], path: null } };
 const FETCH: Operation = { kind: "fetch", remote: null, prune: true };
 const ID = "c".repeat(40);
 

@@ -148,13 +148,20 @@ describe("g, gg and G", () => {
 });
 
 describe("Ctrl", () => {
-  it("pages with Ctrl+d/u (half) and Ctrl+f/b (full), with counts", () => {
+  it("pages with Ctrl+d/u (half) and Ctrl+b (full), with counts", () => {
     const { press } = keyboard();
     expect(press("d", { ctrl: true }).command).toEqual({ kind: "page", by: 0.5 });
     expect(press("u", { ctrl: true }).command).toEqual({ kind: "page", by: -0.5 });
-    expect(press("f", { ctrl: true }).command).toEqual({ kind: "page", by: 1 });
     press("2");
     expect(press("b", { ctrl: true }).command).toEqual({ kind: "page", by: -2 });
+  });
+
+  it("finds with Ctrl+f instead of paging, from everywhere but the help", () => {
+    for (const context of ["graph", "files", "diff", "find", "other"] as const) {
+      expect(keyboard(context).press("f", { ctrl: true }).command).toEqual({ kind: "find" });
+      expect(keyboard(context).press("F", { ctrl: true }).command).toEqual({ kind: "find" });
+    }
+    expect(keyboard("help").press("f", { ctrl: true })).toEqual({ command: null, handled: false });
   });
 
   it("ignores other Ctrl combinations and keeps what is pending", () => {
@@ -228,6 +235,43 @@ describe("Esc and ?", () => {
     expect(type("T")).toEqual([{ kind: "theme" }]);
     expect(interpreter.pending).toBe("");
     expect(type("j")).toEqual([{ kind: "move", by: 1 }]);
+  });
+});
+
+describe("find", () => {
+  it("opens with / and steps through matches with n and N, counts included", () => {
+    for (const context of ["graph", "files"] as const) {
+      expect(keyboard(context).type("/", "n", "N", "3", "n", "2", "N")).toEqual([
+        { kind: "find" },
+        { kind: "findNext", by: 1 },
+        { kind: "findNext", by: -1 },
+        { kind: "findNext", by: 3 },
+        { kind: "findNext", by: -2 },
+      ]);
+    }
+  });
+
+  it("leaves / and n to the diff's own keys", () => {
+    const { press } = keyboard("diff");
+    expect(press("/")).toEqual({ command: null, handled: false });
+    expect(press("n")).toEqual({ command: null, handled: false });
+  });
+
+  it("in the find bar, Enter and Shift+Enter step, Esc escapes, and every other key types", () => {
+    const { interpreter, press } = keyboard("find");
+    expect(press("Enter").command).toEqual({ kind: "findNext", by: 1 });
+    expect(
+      interpreter.press(
+        { key: "Enter", shiftKey: true, ctrlKey: false, altKey: false, metaKey: false, editable: true, context: "find" },
+        5000,
+      ).command,
+    ).toEqual({ kind: "findNext", by: -1 });
+    expect(press("Escape", { editable: true }).command).toEqual({ kind: "escape" });
+    for (const key of ["j", "n", "5", "g", "?", "/", "ArrowDown"]) {
+      expect(press(key, { editable: true })).toEqual({ command: null, handled: false });
+    }
+    expect(press("d", { ctrl: true, editable: true })).toEqual({ command: null, handled: false });
+    expect(interpreter.pending).toBe("");
   });
 });
 
