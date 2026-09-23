@@ -1,5 +1,7 @@
 //! The commits of a history in display order, and questions answered from them alone.
 
+use fergit_graph::Subgraph;
+
 use crate::id_map::IdMap;
 use crate::types::Oid;
 
@@ -167,6 +169,61 @@ impl CommitTable {
             .collect()
     }
 
+    /// Which rows are reachable from any of `rows` (themselves included), like `git rev-list`.
+    ///
+    /// Panics if the table isn't indexed ([`CommitTable::index_parents`]) or a row is out of range.
+    pub fn reachable_from(&self, rows: &[usize]) -> Vec<bool> {
+        assert!(self.is_indexed(), "CommitTable::reachable_from needs an indexed table");
+        let mut reachable = vec![false; self.len()];
+        for &row in rows {
+            reachable[row] = true;
+        }
+        // Parents sit below their children, so one pass down marks everything.
+        let first = rows.iter().copied().min().unwrap_or(self.len());
+        for row in first..self.len() {
+            if reachable[row] {
+                for &parent in &self.parent_rows[self.parent_range(row)] {
+                    if parent != NO_ROW {
+                        reachable[parent as usize] = true;
+                    }
+                }
+            }
+        }
+        reachable
+    }
+
+    /// The rows for which `keep` is true, in the same order, each with its parents rewritten to its
+    /// nearest kept ancestors (see [`Subgraph`]), so the result draws as a connected graph. A hidden
+    /// row for which `only_parent` returns `Some(k)` leads down its `k`th parent alone, the way git
+    /// follows a merge down the side it took a path's content from; otherwise down all of them.
+    /// The result is indexed.
+    ///
+    /// Panics if the table isn't indexed ([`CommitTable::index_parents`]).
+    pub fn subset(&self, keep: impl Fn(usize) -> bool, only_parent: impl Fn(usize) -> Option<usize>) -> CommitTable {
+        assert!(self.is_indexed(), "CommitTable::subset needs an indexed table");
+        let graph = Subgraph::new(
+            self.len(),
+            |row| {
+                let all = &self.parent_rows[self.parent_range(row)];
+                match only_parent(row) {
+                    Some(k) if k < all.len() && !keep(row) => &all[k..=k],
+                    _ => all,
+                }
+            },
+            &keep,
+        );
+        let rows = graph.rows();
+        let mut table = CommitTable::with_capacity(graph.len());
+        let mut parent_rows = Vec::new();
+        for i in 0..graph.len() {
+            let parents = graph.parents(i);
+            table.push(self.id(rows[i] as usize), parents.iter().map(|&p| self.id(rows[p as usize] as usize)));
+            parent_rows.extend_from_slice(parents);
+        }
+        table.set_parent_rows(parent_rows);
+        table
+    }
+
     fn parent_range(&self, index: usize) -> std::ops::Range<usize> {
         let start = if index == 0 { 0 } else { self.parent_ends[index - 1] as usize };
         start..self.parent_ends[index] as usize
@@ -265,6 +322,38 @@ mod tests {
         table.push(oid(1), []);
         table.index_parents();
         assert_eq!(table.ahead_behind(&[(0, 0), (0, 1), (1, 0)]), [(0, 0), (1, 0), (0, 1)]);
+    }
+
+    #[test]
+    fn reachable_from_marks_ancestors_only() {
+        // 0 → 1 → 3, 2 → 3, 4 alone.
+        let table = table(&[vec![1], vec![3], vec![3], vec![], vec![]]);
+        assert_eq!(table.reachable_from(&[1]), [false, true, false, true, false]);
+        assert_eq!(table.reachable_from(&[0, 2]), [true, true, true, true, false]);
+        assert_eq!(table.reachable_from(&[]), [false; 5]);
+    }
+
+    #[test]
+    fn subset_reconnects_kept_rows() {
+        // 0 merges 1 and 2, which both come from 3; 3 comes from 4.
+        let table = table(&[vec![1, 2], vec![3], vec![3], vec![4], vec![]]);
+        let subset = table.subset(|row| row != 1 && row != 3, |_| None);
+        let ids: Vec<Oid> = (0..subset.len()).map(|i| subset.id(i)).collect();
+        assert_eq!(ids, [oid(0), oid(2), oid(4)]);
+        assert_eq!(subset.parents(0), [oid(4), oid(2)], "through hidden 1 and 3, then 2 directly");
+        assert_eq!(subset.parents(1), [oid(4)]);
+        assert_eq!(subset.ahead_behind(&[(0, 1)]), [(1, 0)], "the subset comes indexed");
+    }
+
+    #[test]
+    fn subset_follows_one_side_of_a_hidden_merge_when_told() {
+        // 0 → hidden merge 1 of 2 and 3.
+        let table = table(&[vec![1], vec![2, 3], vec![], vec![]]);
+        let keep = |row: usize| row != 1;
+        assert_eq!(table.subset(keep, |_| None).parents(0), [oid(2), oid(3)]);
+        assert_eq!(table.subset(keep, |row| (row == 1).then_some(1)).parents(0), [oid(3)]);
+        // A kept row lists all its parents whatever `only_parent` says.
+        assert_eq!(table.subset(|_| true, |_| Some(0)).parents(1), [oid(2), oid(3)]);
     }
 
     #[test]
