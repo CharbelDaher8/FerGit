@@ -15,6 +15,8 @@ mod details;
 mod diff;
 mod history;
 mod merges;
+mod paths;
+mod search;
 mod status;
 mod table;
 mod upstream;
@@ -142,6 +144,34 @@ impl Repo {
     ) -> Result<FileDiff, RepoError> {
         diff::file_diff(&self.repo.to_thread_local(), from, to, path, old_path)
     }
+
+    /// The positions in `ids` of the commits `query` finds, in order: those whose message, author
+    /// name or author email contains it, ignoring case, and those whose id starts with it (for a
+    /// hex query of at least four digits). A query of only whitespace finds nothing; ids that
+    /// don't name a commit are skipped.
+    pub fn search(&self, ids: &[Oid], query: &str) -> Result<Vec<usize>, RepoError> {
+        search::search(&self.repo.to_thread_local(), ids, query)
+    }
+
+    /// How each commit in `rows` of `commits` changes the file or directory at `path` (`/`-separated,
+    /// relative to the root, no trailing slash) compared with its parents in the table. Commit
+    /// contents never change, so results may be cached by commit id and path.
+    pub fn path_changes(&self, commits: &CommitTable, rows: &[usize], path: &str) -> Result<Vec<PathChange>, RepoError> {
+        paths::changes(&self.repo.to_thread_local(), commits, rows, path)
+    }
+}
+
+/// How a commit relates to its parents at one path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PathChange {
+    /// What the commit has at the path differs from every parent's: it was added, removed or
+    /// modified, or, for a merge, combined from several sides. A root commit that has the path.
+    Changed,
+    /// The commit has the same thing at the path as its parent at this index (the first such
+    /// parent), including nothing at all.
+    SameAs(usize),
+    /// A root commit without the path.
+    Absent,
 }
 
 /// The state of a repository relevant to drawing its graph.

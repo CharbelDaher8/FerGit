@@ -3,7 +3,11 @@
 //! Everything a session holds is derived from git and can be rebuilt at any time; the session never
 //! patches its own copy of repository state. [`Session::refresh`] re-reads git and swaps in a new
 //! snapshot, with a new generation, only if something visible changed.
+//!
+//! A [`Filter`] narrows a snapshot to some commits. It is part of the snapshot, so changing it is
+//! one more way of installing a new snapshot, and refreshes keep it.
 
+mod filter;
 mod relations;
 
 use std::collections::HashMap;
@@ -16,9 +20,10 @@ use fergit_graph::{GraphRow, Layout};
 use crate::id_map::IdMap;
 use crate::repo::{CommitTable, History, MergeNames, Repo, RepoError, RepoWatcher};
 use crate::types::{
-    CommitDetails, DiffSide, FileChange, FileDiff, Generation, Oid, RefKind, RefLabel, RepoInfo, Row, RowKind,
-    RowLocation, RowsPage, Upstream, UpstreamState,
+    CommitDetails, DiffSide, FileChange, FileDiff, Filter, Generation, Oid, RefKind, RefLabel, RepoInfo, Row,
+    RowKind, RowLocation, RowsPage, SearchResult, Upstream, UpstreamState,
 };
+use filter::PathChanges;
 use relations::{Relations, RelationsBuilder, RowInput, branch_name};
 
 /// The generation of the next snapshot any session in this process builds. Sharing it across
@@ -39,6 +44,8 @@ pub struct Session {
     /// What each merge commit's message names, by commit. Messages never change, so entries stay
     /// valid across snapshots and a refresh reads only the merges it hasn't seen before.
     merge_names: Mutex<IdMap<Option<MergeNames>>>,
+    /// How commits change the path filtered on, kept across snapshots like `merge_names`.
+    path_changes: Mutex<PathChanges>,
 }
 
 impl Session {
@@ -48,12 +55,13 @@ impl Session {
         let history = repo.read_history()?;
         let mut merge_names = IdMap::default();
         read_merge_names(&repo, &history.commits, &mut merge_names)?;
-        let snapshot = Snapshot::build(history, next_generation(), &merge_names);
+        let snapshot = Snapshot::build(history.into(), Filter::default(), None, next_generation(), &merge_names);
         Ok(Session {
             repo,
             current: RwLock::new(Arc::new(snapshot)),
             refresh_lock: Mutex::new(()),
             merge_names: Mutex::new(merge_names),
+            path_changes: Mutex::new(PathChanges::default()),
         })
     }
 
@@ -73,11 +81,67 @@ impl Session {
             return Ok(self.info_for(&current));
         }
         let history = self.repo.read_history()?;
-        let mut merge_names = self.merge_names.lock().unwrap_or_else(PoisonError::into_inner);
-        read_merge_names(&self.repo, &history.commits, &mut merge_names)?;
-        let next = Arc::new(Snapshot::build(history, next_generation(), &merge_names));
+        {
+            let mut merge_names = self.merge_names.lock().unwrap_or_else(PoisonError::into_inner);
+            read_merge_names(&self.repo, &history.commits, &mut merge_names)?;
+        }
+        self.install(history.into(), current.filter.clone())
+    }
+
+    /// Shows only the commits `filter` selects (see [`Filter`]); the default filter shows them all.
+    /// Returns info for the snapshot that is current afterwards, whose generation is new unless the
+    /// filter (once normalized) is the one already applied.
+    ///
+    /// Reuses the snapshot's history rather than reading the repository again. Filtering by path
+    /// reads each commit's tree once per path; later refreshes read only new commits'.
+    pub fn set_filter(&self, filter: Filter) -> Result<RepoInfo, RepoError> {
+        let filter = filter.normalized();
+        let _refreshing = self.refresh_lock.lock().unwrap_or_else(PoisonError::into_inner);
+        let current = self.snapshot();
+        if current.filter == filter {
+            return Ok(self.info_for(&current));
+        }
+        self.install(Arc::clone(&current.history), filter)
+    }
+
+    /// Builds a snapshot of `history` with `filter` applied and makes it current. The caller holds
+    /// `refresh_lock`.
+    fn install(&self, history: Arc<History>, filter: Filter) -> Result<RepoInfo, RepoError> {
+        let shown = {
+            let mut path_changes = self.path_changes.lock().unwrap_or_else(PoisonError::into_inner);
+            filter::apply(&self.repo, &history, &filter, &mut path_changes)?
+        };
+        let merge_names = self.merge_names.lock().unwrap_or_else(PoisonError::into_inner);
+        let next = Arc::new(Snapshot::build(history, filter, shown, next_generation(), &merge_names));
+        drop(merge_names);
         *self.current.write().unwrap_or_else(PoisonError::into_inner) = Arc::clone(&next);
         Ok(self.info_for(&next))
+    }
+
+    /// Every ref of the current snapshot (branches, remote-tracking branches, tags, and HEAD when
+    /// it is detached), whether or not the filter shows its commit; sorted by kind, then full name.
+    /// A ref's `fullName` is what [`Filter::refs`] takes. Upstreams aren't filled in.
+    pub fn refs(&self) -> Vec<RefLabel> {
+        self.snapshot().history.tips.refs.iter().map(|(_, label)| label.clone()).collect()
+    }
+
+    /// The rows of the current snapshot showing a commit or stash that `query` finds; see
+    /// [`Repo::search`]. Reads every commit shown, so it takes a while on a long history.
+    pub fn search(&self, query: &str) -> Result<SearchResult, RepoError> {
+        let snapshot = self.snapshot();
+        let (rows, ids): (Vec<u32>, Vec<Oid>) = snapshot
+            .slots
+            .iter()
+            .zip(0u32..)
+            .filter(|(slot, _)| !matches!(slot, Slot::WorkingTree))
+            .map(|(&slot, row)| (row, snapshot.id(slot)))
+            .unzip();
+        let found = self.repo.search(&ids, query)?;
+        Ok(SearchResult {
+            generation: snapshot.generation,
+            total: u32::try_from(found.len()).expect("fewer than 4 billion rows"),
+            rows: found.into_iter().take(SearchResult::MAX_ROWS).map(|i| rows[i]).collect(),
+        })
     }
 
     /// Keeps the session current: refreshes, on a background thread, whenever the repository may
@@ -207,6 +271,7 @@ impl Session {
             generation: snapshot.generation,
             row_count: snapshot.row_count(),
             head: snapshot.history.tips.head.id(),
+            filter: snapshot.filter.clone(),
         }
     }
 }
@@ -229,7 +294,7 @@ fn read_merge_names(repo: &Repo, commits: &CommitTable, cache: &mut IdMap<Option
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Slot {
     WorkingTree,
-    /// Index into `history.commits`.
+    /// Index into the snapshot's [`Snapshot::commits`].
     Commit(u32),
     /// Index into `history.tips.stashes`.
     Stash(u32),
@@ -238,7 +303,12 @@ enum Slot {
 /// One immutable, fully laid-out view of the repository.
 struct Snapshot {
     generation: Generation,
-    history: History,
+    /// The whole history, whatever the filter shows. Snapshots that differ only in their filter
+    /// share it.
+    history: Arc<History>,
+    filter: Filter,
+    /// The commits `filter` shows, reconnected; `None` when it shows all of `history.commits`.
+    shown: Option<CommitTable>,
     /// Row order. Stash rows sit directly above their base commit; the working-tree row is first.
     slots: Vec<Slot>,
     /// `graph[i]` is the geometry of `slots[i]`.
@@ -251,29 +321,40 @@ struct Snapshot {
 }
 
 impl Snapshot {
-    fn build(mut history: History, generation: Generation, merge_names: &IdMap<Option<MergeNames>>) -> Snapshot {
-        history.commits.index_parents();
+    /// Lays out `history`, or the commits `shown` of it (what `filter` selected) if given. Tables
+    /// read by [`Repo::read_history`] and made by [`CommitTable::subset`] come indexed.
+    fn build(
+        history: Arc<History>,
+        filter: Filter,
+        shown: Option<CommitTable>,
+        generation: Generation,
+        merge_names: &IdMap<Option<MergeNames>>,
+    ) -> Snapshot {
+        // Labels count how far branches diverged over the whole history, whatever is shown.
         let labels = labels(&history);
         let tips = &history.tips;
+        let commits = shown.as_ref().unwrap_or(&history.commits);
 
         let mut stashes_by_base: HashMap<Oid, Vec<u32>> = HashMap::new();
         for (i, stash) in tips.stashes.iter().enumerate() {
             stashes_by_base.entry(stash.base).or_default().push(i as u32);
         }
 
-        // A stash whose base isn't in the history gets no row: nothing to draw it on.
-        let mut slots = Vec::with_capacity(history.commits.len() + tips.stashes.len() + 1);
-        if tips.worktree_dirty {
+        // A stash whose base isn't shown gets no row: nothing to draw it on. Nor does the working
+        // tree when HEAD's commit is filtered out.
+        let head = tips.head.id();
+        let head_shown = || shown.is_none() || head.is_some_and(|head| commits.rows_of(&[head])[0].is_some());
+        let mut slots = Vec::with_capacity(commits.len() + tips.stashes.len() + 1);
+        if tips.worktree_dirty && head_shown() {
             slots.push(Slot::WorkingTree);
         }
-        for i in 0..history.commits.len() {
-            if let Some(stashes) = stashes_by_base.get(&history.commits.id(i)) {
+        for i in 0..commits.len() {
+            if let Some(stashes) = stashes_by_base.get(&commits.id(i)) {
                 slots.extend(stashes.iter().map(|&s| Slot::Stash(s)));
             }
             slots.push(Slot::Commit(i as u32));
         }
 
-        let head = tips.head.id();
         let mut layout = Layout::new();
         let mut relations = RelationsBuilder::with_aliases(relations::upstream_aliases(&tips.upstreams));
         let mut parent_lanes = Vec::new();
@@ -281,7 +362,7 @@ impl Snapshot {
         for &slot in &slots {
             let (kind, id, parents): (RowKind, Oid, &[Oid]) = match slot {
                 Slot::WorkingTree => (RowKind::WorkingTree, Oid::ZERO, head.as_slice()),
-                Slot::Commit(i) => (RowKind::Commit, history.commits.id(i as usize), history.commits.parents(i as usize)),
+                Slot::Commit(i) => (RowKind::Commit, commits.id(i as usize), commits.parents(i as usize)),
                 Slot::Stash(s) => {
                     let stash = &tips.stashes[s as usize];
                     (RowKind::Stash, stash.id, std::slice::from_ref(&stash.base))
@@ -300,17 +381,23 @@ impl Snapshot {
             graph.push(row);
         }
 
-        Snapshot { generation, relations: relations.finish(), history, slots, graph, labels }
+        let relations = relations.finish();
+        Snapshot { generation, history, filter, shown, slots, graph, labels, relations }
     }
 
     fn row_count(&self) -> u32 {
         u32::try_from(self.slots.len()).expect("fewer than 4 billion rows")
     }
 
+    /// The commits the rows show, in display order.
+    fn commits(&self) -> &CommitTable {
+        self.shown.as_ref().unwrap_or(&self.history.commits)
+    }
+
     fn id(&self, slot: Slot) -> Oid {
         match slot {
             Slot::WorkingTree => Oid::ZERO,
-            Slot::Commit(i) => self.history.commits.id(i as usize),
+            Slot::Commit(i) => self.commits().id(i as usize),
             Slot::Stash(s) => self.history.tips.stashes[s as usize].id,
         }
     }
