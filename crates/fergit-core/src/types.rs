@@ -208,9 +208,9 @@ pub struct Upstream {
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum UpstreamState {
-    /// The upstream ref exists locally. `ahead` counts commits on the branch the upstream lacks;
-    /// `behind` counts commits on the upstream the branch lacks.
-    Tracking { ahead: u32, behind: u32 },
+    /// The upstream ref exists locally and points to `id`. `ahead` counts commits on the branch the
+    /// upstream lacks; `behind` counts commits on the upstream the branch lacks.
+    Tracking { ahead: u32, behind: u32, id: Oid },
     /// The upstream is configured but its remote-tracking ref doesn't exist (deleted on the remote
     /// and pruned, or never fetched).
     Gone,
@@ -348,6 +348,125 @@ pub enum LineKind {
     Context,
     Added,
     Removed,
+}
+
+/// Identifies one request to run an operation. The UI generates it; running the same id twice runs
+/// the operation once, so a double click or a retried request can't push twice.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+#[serde(transparent)]
+pub struct OpId(pub String);
+
+/// Something the user asked to do to the repository, described by intent rather than as a git
+/// command line. Names are short ref names as shown on labels (`main`, `v1.0`); they are validated
+/// before git sees them, and never parsed as options.
+///
+/// Serialized into the operation journal, which outlives the binary: variants and fields may be
+/// added, but never renamed or removed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum Operation {
+    /// Switch the worktree to a branch, or detach HEAD at a commit. Fails, changing nothing, if
+    /// uncommitted changes would be overwritten.
+    Checkout { target: CheckoutTarget },
+    /// Create a local branch at `at`, optionally switching to it and making it follow `upstream`
+    /// (a full remote-tracking ref name such as `refs/remotes/origin/main`).
+    CreateBranch { name: String, at: Oid, checkout: bool, upstream: Option<String> },
+    /// Ensure the local branch `name` doesn't exist: deleting one that is already gone succeeds.
+    /// Without `force`, a branch with commits not merged into its upstream (or HEAD) is kept.
+    DeleteBranch { name: String, force: bool },
+    /// Create a tag at `at`: annotated with `message` if there is one, lightweight otherwise.
+    CreateTag { name: String, at: Oid, message: Option<String> },
+    /// Ensure the tag `name` doesn't exist: deleting one that is already gone succeeds.
+    DeleteTag { name: String },
+    /// Download from `remote`, or from every remote when `None`, removing remote-tracking branches
+    /// whose remote branch is gone if `prune` is set.
+    Fetch { remote: Option<String>, prune: bool },
+    /// Fetch the current branch's upstream and fast-forward the branch to it. Fails, changing no
+    /// branch, if the two have diverged; merging and rebasing are separate operations.
+    Pull,
+    /// Push the local branch `branch` to the branch of the same name on `remote` (the branch's push
+    /// remote when `None`), making it the branch's upstream if `set_upstream`.
+    Push {
+        branch: String,
+        remote: Option<String>,
+        force: ForceMode,
+        #[serde(rename = "setUpstream")]
+        set_upstream: bool,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum CheckoutTarget {
+    /// A local branch, by short name.
+    Branch { name: String },
+    /// A commit, detaching HEAD.
+    Commit { id: Oid },
+}
+
+/// Whether a push may replace commits on the remote. There is deliberately no unconditional force.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum ForceMode {
+    /// Only fast-forward the remote branch.
+    None,
+    /// Replace the remote branch, but only if it is still at `expected` (`None`: only if it doesn't
+    /// exist), the tip the user was looking at. A remote branch that moved since, because someone
+    /// else pushed, fails the push as [`OpErrorKind::StaleLease`] instead of losing their work.
+    WithLease { expected: Option<Oid> },
+}
+
+/// How an operation ended. The repository is re-read either way (a failed fetch may still have
+/// updated some refs), and `info` describes the snapshot current afterwards.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum OpOutcome {
+    Done { info: RepoInfo },
+    Failed { info: RepoInfo, error: OpError },
+}
+
+/// Why an operation failed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+#[serde(rename_all = "camelCase")]
+pub struct OpError {
+    pub kind: OpErrorKind,
+    /// What went wrong and what to do about it, written for the user.
+    pub message: String,
+    /// Git's output (errors first, then anything it printed to stdout), with credentials removed.
+    /// Empty if git never ran.
+    pub output: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+#[serde(rename_all = "camelCase")]
+pub enum OpErrorKind {
+    /// A name isn't a valid ref name, a remote doesn't exist, or the repository isn't in a state
+    /// the operation applies to (no current branch to pull, say). Git didn't run.
+    InvalidInput,
+    /// The branch or tag to create already exists.
+    AlreadyExists,
+    /// The branch to delete has commits that would become unreachable; deleting it needs `force`.
+    NotFullyMerged,
+    /// Uncommitted changes would be overwritten.
+    LocalChanges,
+    /// The remote has commits the local branch lacks (push), or the two diverged (pull), or a hook
+    /// on the remote declined the push.
+    Rejected,
+    /// A lease-protected push found the remote branch somewhere other than expected.
+    StaleLease,
+    /// The remote wanted credentials that were missing, cancelled or wrong.
+    AuthFailed,
+    /// Git couldn't be started.
+    GitNotFound,
+    /// Any other failure; `message` has git's own words.
+    Git,
 }
 
 #[cfg(test)]

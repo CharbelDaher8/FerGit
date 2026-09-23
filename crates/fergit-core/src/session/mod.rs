@@ -3,8 +3,15 @@
 //! Everything a session holds is derived from git and can be rebuilt at any time; the session never
 //! patches its own copy of repository state. [`Session::refresh`] re-reads git and swaps in a new
 //! snapshot, with a new generation, only if something visible changed.
+//!
+//! Changes go through [`Session::run`]: one operation at a time, each journaled, followed by a
+//! re-read.
 
+pub mod journal;
+mod operations;
 mod relations;
+
+pub use operations::OpContext;
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -39,6 +46,8 @@ pub struct Session {
     /// What each merge commit's message names, by commit. Messages never change, so entries stay
     /// valid across snapshots and a refresh reads only the merges it hasn't seen before.
     merge_names: Mutex<IdMap<Option<MergeNames>>>,
+    /// Held while an operation runs, which makes operations run one at a time.
+    writer: Mutex<operations::Writer>,
 }
 
 impl Session {
@@ -54,6 +63,7 @@ impl Session {
             current: RwLock::new(Arc::new(snapshot)),
             refresh_lock: Mutex::new(()),
             merge_names: Mutex::new(merge_names),
+            writer: Mutex::default(),
         })
     }
 
@@ -369,7 +379,8 @@ fn upstream_states(history: &History) -> HashMap<&str, Upstream> {
     }
     if !pairs.is_empty() {
         for (upstream, (ahead, behind)) in tracked.into_iter().zip(history.commits.ahead_behind(&pairs)) {
-            let state = UpstreamState::Tracking { ahead, behind };
+            let id = upstream.id.expect("only upstreams that exist are tracked");
+            let state = UpstreamState::Tracking { ahead, behind, id };
             states.insert(upstream.branch.as_str(), Upstream { name: upstream.name.clone(), state });
         }
     }

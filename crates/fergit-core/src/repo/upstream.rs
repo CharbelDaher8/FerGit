@@ -83,7 +83,7 @@ fn upstream_ref(config: &gix::config::File, branch: &BStr) -> Option<BString> {
 /// The configuration loaded at open, with the repository's own files re-read from disk. Falls back
 /// to the configuration as loaded at open if the files can't be read or parsed right now (git may
 /// be halfway through rewriting them).
-fn current_config(repo: &gix::Repository) -> Result<gix::config::File, RepoError> {
+pub(super) fn current_config(repo: &gix::Repository) -> Result<gix::config::File, RepoError> {
     use gix::config::Source;
 
     let opened = repo.config_snapshot().plumbing().clone();

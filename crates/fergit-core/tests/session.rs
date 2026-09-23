@@ -2,6 +2,7 @@
 
 mod common;
 
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -26,8 +27,10 @@ fn upstream_of(session: &Session, branch: &str) -> Option<Upstream> {
         .upstream
 }
 
-fn tracking(name: &str, ahead: u32, behind: u32) -> Option<Upstream> {
-    Some(Upstream { name: name.to_owned(), state: UpstreamState::Tracking { ahead, behind } })
+/// Following `name`, which points where git in `repo` says it does.
+fn tracking(repo: &Path, name: &str, ahead: u32, behind: u32) -> Option<Upstream> {
+    let id = rev_parse(repo, name);
+    Some(Upstream { name: name.to_owned(), state: UpstreamState::Tracking { ahead, behind, id } })
 }
 
 /// A bare `origin.git` with one commit on `main`, a `work` repository that pushes to it, and a
@@ -145,8 +148,8 @@ fn upstream_state_matches_git() {
 
     let session = Session::open(&clone).unwrap();
 
-    assert_eq!(upstream_of(&session, "main"), tracking("origin/main", 2, 1));
-    assert_eq!(upstream_of(&session, "follower"), tracking("main", 0, 0));
+    assert_eq!(upstream_of(&session, "main"), tracking(&clone, "origin/main", 2, 1));
+    assert_eq!(upstream_of(&session, "follower"), tracking(&clone, "main", 0, 0));
     assert_eq!(
         upstream_of(&session, "stale"),
         Some(Upstream { name: "origin/deleted".to_owned(), state: UpstreamState::Gone })
@@ -167,7 +170,7 @@ fn refresh_notices_an_upstream_being_set() {
     git(&clone, &["branch", "--quiet", "--set-upstream-to", "origin/main", "topic"]);
 
     assert!(session.refresh().unwrap().generation > opened, "an upstream change is visible state");
-    assert_eq!(upstream_of(&session, "topic"), tracking("origin/main", 0, 0));
+    assert_eq!(upstream_of(&session, "topic"), tracking(&clone, "origin/main", 0, 0));
 }
 
 #[test]
@@ -223,7 +226,7 @@ fn a_merged_branch_behind_its_upstream_keeps_its_local_name() {
     git(&clone, &["fetch", "--quiet"]);
 
     let session = Session::open(&clone).unwrap();
-    assert_eq!(upstream_of(&session, "feature"), tracking("origin/feature", 0, 1), "the fixture is behind as intended");
+    assert_eq!(upstream_of(&session, "feature"), tracking(&clone, "origin/feature", 0, 1), "the fixture is behind as intended");
     let rows = all_rows(&session);
     let merge = rows.iter().find(|row| row.summary == "Merge branch 'feature'").expect("the merge row");
 

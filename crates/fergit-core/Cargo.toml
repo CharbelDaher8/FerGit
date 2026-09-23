@@ -13,11 +13,11 @@ fergit-graph.workspace = true
 gix.workspace = true
 notify-debouncer-mini.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
 specta = { workspace = true, optional = true, features = ["derive"] }
 # Only for the `Number` type override, so 64-bit timestamps export as a plain TS `number`.
 specta-typescript = { workspace = true, optional = true }
 
 [dev-dependencies]
-serde_json.workspace = true
 tempfile.workspace = true
