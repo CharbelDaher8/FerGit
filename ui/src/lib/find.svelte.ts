@@ -64,6 +64,17 @@ export class Finder {
     return this.#current;
   }
 
+  /** What the find bar says: "3 of 12", "12 found", "No matches", "Searching…", or "" before a search. */
+  get status(): string {
+    if (this.query.trim() === "") return "";
+    if (this.#searching) return "Searching…";
+    const result = this.#result;
+    if (!result) return "";
+    if (result.total === 0) return "No matches";
+    const total = result.total.toLocaleString();
+    return this.#current === null ? `${total} found` : `${(this.#current + 1).toLocaleString()} of ${total}`;
+  }
+
   /** Whether row `index` of the snapshot on screen is a match. */
   isMatch(index: number): boolean {
     return this.#isCurrentSnapshot() && this.#rows.has(index);

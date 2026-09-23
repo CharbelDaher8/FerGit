@@ -153,6 +153,27 @@ describe("stepping", () => {
   });
 });
 
+describe("status", () => {
+  it("says what the search found and which match is current", async () => {
+    const { finder } = setup();
+    expect(finder.status).toBe("");
+    backend.hold = true;
+    finder.query = "fix";
+    const pending = finder.search(true);
+    expect(finder.status).toBe("Searching…");
+    backend.held[0]();
+    await pending;
+    expect(finder.status).toBe("1 of 3");
+    await finder.step(1);
+    expect(finder.status).toBe("2 of 3");
+
+    backend.hold = false;
+    finder.query = "none";
+    await finder.search(true);
+    expect(finder.status).toBe("No matches");
+  });
+});
+
 describe("highlighting", () => {
   it("marks the matches and the current one", async () => {
     const { finder } = setup();
