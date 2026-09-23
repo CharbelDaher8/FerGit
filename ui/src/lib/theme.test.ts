@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
+import bootScript from "../../public/theme-boot.js?raw";
+import appCss from "../app.css?raw";
+import { LANE_COLORS, laneToken } from "./graph";
 import {
+  DARK_SCHEME_QUERY,
   THEME_MODES,
+  THEME_STORAGE_KEY,
   ThemeState,
   nextThemeMode,
   parseThemeMode,
@@ -107,5 +112,65 @@ describe("ThemeState", () => {
     const theme = new ThemeState({ themeMode: "system" }, null);
     expect(theme.follow()).toBeTypeOf("function");
     expect(theme.theme).toBe("light");
+  });
+});
+
+describe("the pre-paint boot script", () => {
+  /** Runs theme-boot.js against a fake page and returns the `data-theme` it set. */
+  function boot(stored: string | null | Error, systemDark: boolean): string | undefined {
+    const dataset: Record<string, string> = {};
+    const localStorage = {
+      getItem(key: string) {
+        if (stored instanceof Error) throw stored;
+        return key === THEME_STORAGE_KEY ? stored : null;
+      },
+    };
+    const window = {
+      matchMedia: (query: string) => ({ matches: query === DARK_SCHEME_QUERY && systemDark }),
+    };
+    const document = { documentElement: { dataset } };
+    new Function("localStorage", "window", "document", bootScript)(localStorage, window, document);
+    return dataset.theme;
+  }
+
+  it("resolves the stored mode the same way the app does", () => {
+    for (const stored of [null, "system", "light", "dark", "neon"]) {
+      for (const systemDark of [true, false]) {
+        expect(boot(stored, systemDark), `${stored} / OS dark: ${systemDark}`).toBe(
+          resolveTheme(parseThemeMode(stored), systemDark),
+        );
+      }
+    }
+  });
+
+  it("follows the OS when storage throws", () => {
+    expect(boot(new Error("denied"), true)).toBe("dark");
+    expect(boot(new Error("denied"), false)).toBe("light");
+  });
+});
+
+describe("the theme tokens in app.css", () => {
+  /** The custom properties a rule defines, by its exact selector. */
+  function tokens(selector: string): Map<string, string> {
+    const start = appCss.indexOf(`${selector} {`);
+    expect(start, selector).toBeGreaterThanOrEqual(0);
+    const body = appCss.slice(start, appCss.indexOf("}", start));
+    return new Map([...body.matchAll(/(--[\w-]+):\s*([^;]+);/g)].map((match) => [match[1], match[2].trim()]));
+  }
+  const light = tokens(":root");
+  const dark = tokens(':root[data-theme="dark"]');
+
+  it("gives the dark theme its own value for every color", () => {
+    const colors = [...light.keys()].filter((name) => !name.startsWith("--font-"));
+    expect([...dark.keys()].sort()).toEqual(colors.sort());
+  });
+
+  it("defines every lane color in both themes, all distinct", () => {
+    for (const theme of [light, dark]) {
+      const lanes = Array.from({ length: LANE_COLORS }, (_, color) => theme.get(laneToken(color)));
+      expect(lanes.every((value) => value !== undefined)).toBe(true);
+      expect(new Set(lanes).size).toBe(LANE_COLORS);
+      expect(theme.has(`--lane-${LANE_COLORS}`)).toBe(false);
+    }
   });
 });

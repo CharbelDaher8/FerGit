@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { getCurrentWindow } from "@tauri-apps/api/window";
   import { open } from "@tauri-apps/plugin-dialog";
   import { tick, untrack } from "svelte";
   import type { FileChange } from "./lib/bindings";
@@ -9,7 +10,8 @@
   import KeyHelp from "./lib/KeyHelp.svelte";
   import { KeyInterpreter, PENDING_G_TIMEOUT_MS, type Command, type KeyContext } from "./lib/keys";
   import { session } from "./lib/session.svelte";
-  import { settings } from "./lib/settings.svelte";
+  import { settings, theme } from "./lib/settings.svelte";
+  import { applyTheme } from "./lib/theme.svelte";
 
   let detailsOpen = $state(true);
   const inspector = new Inspector();
@@ -167,6 +169,22 @@
     const path = await open({ directory: true, title: "Open repository" });
     if (typeof path === "string") await openRepository(path);
   }
+
+  // Theme: follow the OS while the app runs, show the resolved theme on the page, and give the
+  // native window (its title bar) the chosen mode, `null` meaning the OS's.
+  $effect(() => theme.follow());
+  $effect(() => applyTheme(document.documentElement, theme.theme));
+  $effect(() => {
+    const mode = theme.mode;
+    // Cosmetic, so failures (no Tauri window, as with the mock backend) are ignored.
+    try {
+      getCurrentWindow()
+        .setTheme(mode === "system" ? null : mode)
+        .catch(() => {});
+    } catch {
+      // Not running in a Tauri window.
+    }
+  });
 
   // Follow changes the backend detects on disk for as long as the app runs.
   $effect(() => session.followChanges());

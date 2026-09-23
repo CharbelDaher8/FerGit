@@ -25,5 +25,7 @@ export default defineConfig({
     // Relative to `root`. Only the pure modules are unit-tested; they need no DOM.
     include: ["src/**/*.test.ts"],
     environment: "node",
+    // CSS is stubbed out in tests unless included; theme.test.ts reads the tokens in app.css.
+    css: { include: [/app\.css/] },
   },
 });
