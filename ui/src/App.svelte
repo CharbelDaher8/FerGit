@@ -11,7 +11,7 @@
   import { KeyInterpreter, PENDING_G_TIMEOUT_MS, type Command, type KeyContext } from "./lib/keys";
   import { session } from "./lib/session.svelte";
   import { settings, theme } from "./lib/settings.svelte";
-  import { applyTheme } from "./lib/theme.svelte";
+  import { applyTheme, nextThemeMode, type ThemeMode } from "./lib/theme.svelte";
 
   let detailsOpen = $state(true);
   const inspector = new Inspector();
@@ -116,6 +116,9 @@
       case "help":
         helpOpen = !helpOpen;
         return;
+      case "theme":
+        theme.cycle();
+        return;
       case "close":
         closeDiff();
         return;
@@ -169,6 +172,15 @@
     const path = await open({ directory: true, title: "Open repository" });
     if (typeof path === "string") await openRepository(path);
   }
+
+  /** How the theme button shows each mode. */
+  const THEME_LABELS: Record<ThemeMode, { icon: string; name: string }> = {
+    system: { icon: "◐", name: "System" },
+    light: { icon: "☀︎", name: "Light" }, // ☀ as text, not an emoji
+    dark: { icon: "☾", name: "Dark" },
+  };
+  const themeLabel = $derived(THEME_LABELS[theme.mode]);
+  const nextThemeLabel = $derived(THEME_LABELS[nextThemeMode(theme.mode)]);
 
   // Theme: follow the OS while the app runs, show the resolved theme on the page, and give the
   // native window (its title bar) the chosen mode, `null` meaning the OS's.
@@ -226,6 +238,12 @@
         Refresh
       </button>
     {/if}
+    <button
+      class="icon-button theme-button"
+      aria-label="Theme: {themeLabel.name}"
+      title="Theme: {themeLabel.name}. Switch to {nextThemeLabel.name} (T)"
+      onclick={() => theme.cycle()}>{themeLabel.icon}</button
+    >
     <button
       class="icon-button keys-button"
       aria-label="Keyboard shortcuts"
@@ -351,6 +369,12 @@
     color: var(--fg-subtle);
     font-size: 12px;
     font-variant-numeric: tabular-nums;
+  }
+
+  .theme-button {
+    flex: none;
+    margin-left: auto;
+    font-size: 14px;
   }
 
   .keys-button {
