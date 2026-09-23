@@ -50,6 +50,7 @@
       title: "Anywhere",
       keys: [
         ["?", "Show or hide these shortcuts"],
+        ["T", "Switch theme: system, light, dark"],
         ["Esc", "Cancel a half-typed count or g, else close the diff, else stop comparing"],
       ],
     },
