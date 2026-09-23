@@ -64,6 +64,7 @@ Everything specific to the git CLI lives only in this module:
 - `--end-of-options` before any ref the user supplied
 - machine-readable output: `-z`, `--porcelain=v2`
 - `LC_ALL=C`, `GIT_TERMINAL_PROMPT=0`, and `GIT_ASKPASS` pointing to our own helper
+- `GIT_EDITOR=:` and `GIT_SEQUENCE_EDITOR=:`, the editor git itself treats as "don't edit", so a merge, rebase or cherry-pick never waits on an editor
 - a short retry when git's `index.lock` is briefly held
 
 Operations describe what the user wants, not git commands (APOSD ch6):
@@ -147,6 +148,8 @@ impl Snapshot {
   The journal gives you:
   - an audit trail
   - **Undo**, done as a *new* operation that restores the recorded tips; the log itself is never edited (DDIA ch11)
+    - It restores the most recent entry not yet undone: local branches and tags, HEAD after a checkout, a dropped or pushed stash. All refs move in one `git update-ref --stdin` transaction, each from the value the entry left it at, so undo is refused if anything moved since.
+    - It can't bring back what git never stored (uncommitted changes a hard reset discarded, files a stash apply changed) or what left the machine: a push blocks undo, because the remote keeps the commits.
   - an optional, off-by-default enterprise feature that ships it to Azure (Log Analytics, or Blob storage with an immutability/WORM policy)
 - **Compact in-memory layout (APOSD ch20, DDIA ch3).** Keep the commit index as separate arrays:
   - `oids: Vec<[u8;20]>`
@@ -188,7 +191,7 @@ event repo_changed { repo, generation, row_count }
 
 | Situation | How it's handled |
 |---|---|
-| Merge, rebase or cherry-pick stops with conflicts | **Not an error.** It's a normal state, `RepoState::Merging{conflicts}`, shown as a banner with Continue / Abort. |
+| Merge, rebase, cherry-pick or revert stops with conflicts | **Not an error.** It's a normal state, `RepoState::Merging`, `Rebasing`, `CherryPicking` or `Reverting`, each with its conflicts (read from `MERGE_HEAD`, `rebase-merge/`, the index…), shown as a banner with Continue / Abort (/ Skip). The user resolves files in their own editor; the watcher keeps the list current. |
 | Empty repo, unborn HEAD, detached HEAD | Normal: zero rows, or HEAD is just another label |
 | `rows()` past the end, or deleting a branch that's already gone | Defined away: returns an empty page or `Ok` |
 | `index.lock` briefly held | Handled inside `repo` with a short retry |
