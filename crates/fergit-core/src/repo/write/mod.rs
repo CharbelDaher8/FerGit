@@ -369,7 +369,7 @@ fn git_summary(stderr: &str) -> Option<&str> {
 fn branch_ref(name: &str) -> Result<String, OpFailure> {
     let full_name = format!("refs/heads/{name}");
     // `git branch` refuses names starting with a dash even where the ref format allows them.
-    if name.starts_with('-') || gix::validate::reference::branch_name(BStr::new(&full_name)).is_err() || name == "HEAD" {
+    if name.starts_with('-') || name == "HEAD" || gix::validate::reference::branch_name(BStr::new(&full_name)).is_err() {
         return Err(invalid_name("branch", name));
     }
     Ok(full_name)
@@ -378,7 +378,8 @@ fn branch_ref(name: &str) -> Result<String, OpFailure> {
 /// `refs/tags/<name>`, if `name` is a valid tag name.
 fn tag_ref(name: &str) -> Result<String, OpFailure> {
     let full_name = format!("refs/tags/{name}");
-    if name.starts_with('-') || gix::validate::reference::name(BStr::new(&full_name)).is_err() {
+    // Like `git tag`, which refuses the two names the ref format alone would allow.
+    if name.starts_with('-') || name == "HEAD" || gix::validate::reference::name(BStr::new(&full_name)).is_err() {
         return Err(invalid_name("tag", name));
     }
     Ok(full_name)
