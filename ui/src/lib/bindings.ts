@@ -8,21 +8,23 @@ import * as __TAURI_EVENT from "@tauri-apps/api/event";
 /** Commands */
 export const commands = {
 	/**
-	 *  Opens the repository containing `path`, replacing any open repository, and starts emitting
-	 *  `repoChanged` events for it.
+	 *  Opens the repository containing `path` in a new session that emits `repoChanged` events, or
+	 *  returns the session that already has that repository open.
 	 */
-	openRepo: (path: string) => __TAURI_INVOKE<RepoInfo>("open_repo", { path }),
-	/**  Re-reads the open repository. The generation changes only if something visible changed. */
-	refresh: () => __TAURI_INVOKE<RepoInfo>("refresh"),
+	openRepo: (path: string) => __TAURI_INVOKE<OpenedRepo>("open_repo", { path }),
+	/**  Closes a session and stops watching its repository. Closing a closed session does nothing. */
+	closeRepo: (session: SessionId) => __TAURI_INVOKE<null>("close_repo", { session }),
+	/**  Re-reads a session's repository. The generation changes only if something visible changed. */
+	refresh: (session: SessionId) => __TAURI_INVOKE<RepoInfo>("refresh", { session }),
 	/**  Rows `start..start + len` of the current snapshot, clamped to the rows that exist. */
-	rows: (start: number, len: number) => __TAURI_INVOKE<RowsPage>("rows", { start, len }),
+	rows: (session: SessionId, start: number, len: number) => __TAURI_INVOKE<RowsPage>("rows", { session, start, len }),
 	/**
 	 *  Where the row showing `id` (a commit, a stash, or the all-zero id for uncommitted changes) is
 	 *  in the current snapshot; `row` is `null` if no row shows it.
 	 */
-	locate: (id: Oid) => __TAURI_INVOKE<RowLocation>("locate", { id }),
+	locate: (session: SessionId, id: Oid) => __TAURI_INVOKE<RowLocation>("locate", { session, id }),
 	/**  Full details of one commit; `null` if `id` isn't a commit. */
-	commitDetails: (id: Oid) => __TAURI_INVOKE<{
+	commitDetails: (session: SessionId, id: Oid) => __TAURI_INVOKE<{
 	id: Oid,
 	parents: Oid[],
 	author: Signature,
@@ -31,12 +33,12 @@ export const commands = {
 	message: string,
 	/**  Files changed relative to the first parent (or the empty tree for a root commit). */
 	files: FileChange[],
-} | null>("commit_details", { id }),
+} | null>("commit_details", { session, id }),
 	/**
 	 *  Files that differ between `from` and `to`, sorted by path; a `from` of `null` compares against
 	 *  nothing. Reads the index and worktree as they are now.
 	 */
-	changes: (from: 
+	changes: (session: SessionId, from: 
 /**  The files of a commit. */
 { kind: "commit"; id: Oid } | 
 /**  The staged files: what the next commit would contain. */
@@ -45,12 +47,12 @@ export const commands = {
  *  The files on disk as git would store them (line endings converted the way git would), plus
  *  untracked files that aren't ignored.
  */
-{ kind: "worktree" } | null, to: DiffSide) => __TAURI_INVOKE<FileChange[]>("changes", { from, to }),
+{ kind: "worktree" } | null, to: DiffSide) => __TAURI_INVOKE<FileChange[]>("changes", { session, from, to }),
 	/**
 	 *  How one file differs between `from` (`null`: nothing) and `to`. `path` names the file on the
 	 *  `to` side; pass `oldPath` when it was renamed or copied from another path.
 	 */
-	fileDiff: (from: 
+	fileDiff: (session: SessionId, from: 
 /**  The files of a commit. */
 { kind: "commit"; id: Oid } | 
 /**  The staged files: what the next commit would contain. */
@@ -59,7 +61,7 @@ export const commands = {
  *  The files on disk as git would store them (line endings converted the way git would), plus
  *  untracked files that aren't ignored.
  */
-{ kind: "worktree" } | null, to: DiffSide, path: string, oldPath: string | null) => __TAURI_INVOKE<FileDiff>("file_diff", { from, to, path, oldPath }),
+{ kind: "worktree" } | null, to: DiffSide, path: string, oldPath: string | null) => __TAURI_INVOKE<FileDiff>("file_diff", { session, from, to, path, oldPath }),
 };
 
 /** Events */
@@ -127,7 +129,7 @@ export type Edge = {
 };
 
 export type ErrorKind = 
-/**  A command needed an open repository and none is open. */
+/**  A command named a session that isn't open (any more). */
 "noRepository" | "notARepository" | "git" | 
 /**  A bug in FerGit. */
 "internal";
@@ -167,7 +169,7 @@ export type FileDiff =
 /**
  *  Identifies one snapshot of a repository. Increases every time the visible state changes, and
  *  keeps increasing across repositories opened in the same process, so the UI can discard any
- *  response or event from an older snapshot, including one of a previously open repository.
+ *  response or event from an older snapshot, including one of a repository it opened before.
  */
 export type Generation = number;
 
@@ -200,6 +202,12 @@ export type LineKind = "context" | "added" | "removed";
 
 /**  A git object id (SHA-1). Crosses IPC as a 40-character lowercase hex string. */
 export type Oid = string;
+
+/**  A repository `open_repo` opened, or found already open. */
+export type OpenedRepo = {
+	session: SessionId,
+	info: RepoInfo,
+};
 
 /**  Declaration order is display order. */
 export type RefKind = 
@@ -242,10 +250,13 @@ export type Relation =
 { kind: "merges"; lane: number; branch: string | null; into: string | null };
 
 /**
- *  Sent when the open repository changed on disk and a newer snapshot is current. Carries what
- *  `refresh` would return, so the UI handles both the same way.
+ *  Sent when an open repository changed on disk and a newer snapshot is current. `info` is what
+ *  `refresh` would return for `session`, so the UI handles both the same way.
  */
-export type RepoChanged = RepoInfo;
+export type RepoChanged = {
+	session: SessionId,
+	info: RepoInfo,
+};
 
 export type RepoInfo = {
 	/**  Worktree root, or the git directory for a bare repository. */
@@ -295,6 +306,12 @@ export type RowsPage = {
 	total: number,
 	rows: Row[],
 };
+
+/**
+ *  Identifies one open session (a tab in the UI) for as long as it is open. Never reused within a
+ *  process, so a request or event naming a closed session can't reach one opened after it.
+ */
+export type SessionId = number;
 
 export type Signature = {
 	name: string,

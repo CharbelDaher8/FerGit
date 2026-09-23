@@ -1,14 +1,15 @@
-//! FerGit desktop shell: exposes a fergit-core [`Session`] to the webview over typed IPC.
+//! FerGit desktop shell: exposes fergit-core [`Sessions`], one per tab, to the webview over typed
+//! IPC.
 //!
 //! Commands are thin: they move work off the async runtime and translate errors. Anything that
 //! knows about git or the graph belongs in fergit-core.
 
 use std::path::Path;
-use std::sync::{Arc, PoisonError, RwLock};
+use std::sync::Arc;
 
-use fergit_core::repo::{RepoError, RepoWatcher};
-use fergit_core::session::Session;
-use fergit_core::{CommitDetails, DiffSide, FileChange, FileDiff, Oid, RepoInfo, RowLocation, RowsPage};
+use fergit_core::repo::RepoError;
+use fergit_core::session::{Session, Sessions};
+use fergit_core::{CommitDetails, DiffSide, FileChange, FileDiff, Oid, RepoInfo, RowLocation, RowsPage, SessionId};
 use serde::Serialize;
 use specta_typescript::Typescript;
 use tauri::{AppHandle, State};
@@ -26,7 +27,7 @@ pub struct AppError {
 #[derive(Debug, Serialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub enum ErrorKind {
-    /// A command needed an open repository and none is open.
+    /// A command named a session that isn't open (any more).
     NoRepository,
     NotARepository,
     Git,
@@ -50,32 +51,32 @@ impl From<RepoError> for AppError {
     }
 }
 
-/// Sent when the open repository changed on disk and a newer snapshot is current. Carries what
-/// `refresh` would return, so the UI handles both the same way.
+/// Sent when an open repository changed on disk and a newer snapshot is current. `info` is what
+/// `refresh` would return for `session`, so the UI handles both the same way.
 #[derive(Debug, Clone, Serialize, specta::Type, tauri_specta::Event)]
-pub struct RepoChanged(RepoInfo);
-
-struct OpenRepo {
-    session: Arc<Session>,
-    /// Emits [`RepoChanged`]; `None` if watching failed, in which case changes show up on the next
-    /// explicit refresh instead.
-    _watcher: Option<RepoWatcher>,
+pub struct RepoChanged {
+    session: SessionId,
+    info: RepoInfo,
 }
 
-/// App-wide state. One repository is open at a time for now.
+/// A repository `open_repo` opened, or found already open.
+#[derive(Debug, Serialize, specta::Type)]
+pub struct OpenedRepo {
+    session: SessionId,
+    info: RepoInfo,
+}
+
+/// App-wide state: the open sessions, one per tab.
 #[derive(Default)]
 struct AppState {
-    open: RwLock<Option<OpenRepo>>,
+    sessions: Arc<Sessions>,
 }
 
 impl AppState {
-    fn session(&self) -> Result<Arc<Session>, AppError> {
-        self.open
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .as_ref()
-            .map(|open| Arc::clone(&open.session))
-            .ok_or_else(|| AppError::new(ErrorKind::NoRepository, "No repository is open."))
+    fn session(&self, id: SessionId) -> Result<Arc<Session>, AppError> {
+        self.sessions
+            .get(id)
+            .ok_or_else(|| AppError::new(ErrorKind::NoRepository, "That repository is no longer open."))
     }
 }
 
@@ -89,34 +90,47 @@ async fn blocking<T: Send + 'static>(
         .map_err(AppError::from)
 }
 
-/// Opens the repository containing `path`, replacing any open repository, and starts emitting
-/// `repoChanged` events for it.
+/// Opens the repository containing `path` in a new session that emits `repoChanged` events, or
+/// returns the session that already has that repository open.
 #[tauri::command]
 #[specta::specta]
-async fn open_repo(app: AppHandle, state: State<'_, AppState>, path: String) -> Result<RepoInfo, AppError> {
-    let session = Arc::new(blocking(move || Session::open(Path::new(&path))).await?);
-    // Emitting fails only while the app shuts down, when nobody is listening anyway.
-    let watcher = session.watch(move |info| drop(RepoChanged(info).emit(&app))).ok();
-    let info = session.info();
-    // Replacing the previous repository drops its watcher. An event it already sent carries an
-    // older generation than any of this repository's, so the UI ignores it.
-    *state.open.write().unwrap_or_else(PoisonError::into_inner) = Some(OpenRepo { session, _watcher: watcher });
-    Ok(info)
+async fn open_repo(app: AppHandle, state: State<'_, AppState>, path: String) -> Result<OpenedRepo, AppError> {
+    let sessions = Arc::clone(&state.sessions);
+    blocking(move || {
+        // Emitting fails only while the app shuts down, when nobody is listening anyway.
+        let on_change = move |session, info| drop(RepoChanged { session, info }.emit(&app));
+        let (session, opened) = sessions.open(Path::new(&path), on_change)?;
+        Ok(OpenedRepo { session, info: opened.info() })
+    })
+    .await
 }
 
-/// Re-reads the open repository. The generation changes only if something visible changed.
+/// Closes a session and stops watching its repository. Closing a closed session does nothing.
 #[tauri::command]
 #[specta::specta]
-async fn refresh(state: State<'_, AppState>) -> Result<RepoInfo, AppError> {
-    let session = state.session()?;
+async fn close_repo(state: State<'_, AppState>, session: SessionId) -> Result<(), AppError> {
+    let sessions = Arc::clone(&state.sessions);
+    // Stopping the watcher can wait on its thread, so it stays off the async runtime.
+    blocking(move || {
+        sessions.close(session);
+        Ok(())
+    })
+    .await
+}
+
+/// Re-reads a session's repository. The generation changes only if something visible changed.
+#[tauri::command]
+#[specta::specta]
+async fn refresh(state: State<'_, AppState>, session: SessionId) -> Result<RepoInfo, AppError> {
+    let session = state.session(session)?;
     blocking(move || session.refresh()).await
 }
 
 /// Rows `start..start + len` of the current snapshot, clamped to the rows that exist.
 #[tauri::command]
 #[specta::specta]
-async fn rows(state: State<'_, AppState>, start: u32, len: u32) -> Result<RowsPage, AppError> {
-    let session = state.session()?;
+async fn rows(state: State<'_, AppState>, session: SessionId, start: u32, len: u32) -> Result<RowsPage, AppError> {
+    let session = state.session(session)?;
     blocking(move || session.rows(start, len)).await
 }
 
@@ -124,16 +138,20 @@ async fn rows(state: State<'_, AppState>, start: u32, len: u32) -> Result<RowsPa
 /// in the current snapshot; `row` is `null` if no row shows it.
 #[tauri::command]
 #[specta::specta]
-async fn locate(state: State<'_, AppState>, id: Oid) -> Result<RowLocation, AppError> {
-    let session = state.session()?;
+async fn locate(state: State<'_, AppState>, session: SessionId, id: Oid) -> Result<RowLocation, AppError> {
+    let session = state.session(session)?;
     blocking(move || Ok::<_, RepoError>(session.locate(id))).await
 }
 
 /// Full details of one commit; `null` if `id` isn't a commit.
 #[tauri::command]
 #[specta::specta]
-async fn commit_details(state: State<'_, AppState>, id: Oid) -> Result<Option<CommitDetails>, AppError> {
-    let session = state.session()?;
+async fn commit_details(
+    state: State<'_, AppState>,
+    session: SessionId,
+    id: Oid,
+) -> Result<Option<CommitDetails>, AppError> {
+    let session = state.session(session)?;
     blocking(move || session.commit_details(id)).await
 }
 
@@ -141,8 +159,13 @@ async fn commit_details(state: State<'_, AppState>, id: Oid) -> Result<Option<Co
 /// nothing. Reads the index and worktree as they are now.
 #[tauri::command]
 #[specta::specta]
-async fn changes(state: State<'_, AppState>, from: Option<DiffSide>, to: DiffSide) -> Result<Vec<FileChange>, AppError> {
-    let session = state.session()?;
+async fn changes(
+    state: State<'_, AppState>,
+    session: SessionId,
+    from: Option<DiffSide>,
+    to: DiffSide,
+) -> Result<Vec<FileChange>, AppError> {
+    let session = state.session(session)?;
     blocking(move || session.changes(from, to)).await
 }
 
@@ -152,18 +175,28 @@ async fn changes(state: State<'_, AppState>, from: Option<DiffSide>, to: DiffSid
 #[specta::specta]
 async fn file_diff(
     state: State<'_, AppState>,
+    session: SessionId,
     from: Option<DiffSide>,
     to: DiffSide,
     path: String,
     old_path: Option<String>,
 ) -> Result<FileDiff, AppError> {
-    let session = state.session()?;
+    let session = state.session(session)?;
     blocking(move || session.file_diff(from, to, &path, old_path.as_deref())).await
 }
 
 fn specta_builder() -> Builder<tauri::Wry> {
     Builder::<tauri::Wry>::new()
-        .commands(collect_commands![open_repo, refresh, rows, locate, commit_details, changes, file_diff])
+        .commands(collect_commands![
+            open_repo,
+            close_repo,
+            refresh,
+            rows,
+            locate,
+            commit_details,
+            changes,
+            file_diff
+        ])
         .events(collect_events![RepoChanged])
         .error_handling(ErrorHandlingMode::Throw)
 }
