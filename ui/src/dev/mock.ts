@@ -157,6 +157,7 @@ mockIPC((command, payload) => {
   const args = (payload ?? {}) as Record<string, unknown>;
   switch (command) {
     case "open_repo":
+      return { session: 1, info };
     case "refresh":
       return info;
     case "rows": {
@@ -185,4 +186,4 @@ window.addEventListener("unhandledrejection", (event) => {
 const target = document.getElementById("app");
 if (!target) throw new Error("FerGit mock: #app element missing");
 mount(App, { target });
-void session.open(info.root);
+void session.tabs.open(info.root);

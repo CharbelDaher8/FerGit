@@ -1,55 +1,25 @@
 <script lang="ts">
   import { open } from "@tauri-apps/plugin-dialog";
-  import { tick, untrack } from "svelte";
-  import type { FileChange } from "./lib/bindings";
-  import DetailsPanel from "./lib/DetailsPanel.svelte";
-  import DiffView from "./lib/DiffView.svelte";
-  import GraphView from "./lib/GraphView.svelte";
-  import { Inspector, subjectOf, type FileList } from "./lib/inspector.svelte";
+  import { tick } from "svelte";
   import KeyHelp from "./lib/KeyHelp.svelte";
   import { KeyInterpreter, PENDING_G_TIMEOUT_MS, type Command, type KeyContext } from "./lib/keys";
   import { session } from "./lib/session.svelte";
   import { settings } from "./lib/settings.svelte";
+  import TabPane from "./lib/TabPane.svelte";
+  import type { Tab } from "./lib/tabs.svelte";
 
-  let detailsOpen = $state(true);
-  const inspector = new Inspector();
-  /** Where focus was when a diff opened; it goes back there when the diff closes. */
-  let focusBeforeDiff: HTMLElement | null = null;
-
-  // Tell the inspector what is selected, and when the repository may have changed (including
-  // refreshes that leave the generation alone, which matter for the index and worktree).
-  $effect(() => {
-    const view = session.view;
-    const subject = view ? subjectOf(view) : ({ kind: "none" } as const);
-    const head = session.info?.head ?? null;
-    const version = `${view?.generation ?? 0}:${session.updates}`;
-    untrack(() => inspector.show(subject, head, version));
-  });
-  $effect(() => () => inspector.dispose());
-
-  function openFile(list: FileList, file: FileChange): void {
-    if (!inspector.diff) {
-      focusBeforeDiff = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    }
-    inspector.openFile(list, file);
-  }
-
-  function closeDiff(): void {
-    inspector.closeDiff();
-    focusBeforeDiff?.focus();
-    focusBeforeDiff = null;
-  }
+  const tabs = session.tabs;
+  /** Each open tab's pane, by session. */
+  const panes: Record<number, ReturnType<typeof TabPane> | undefined> = $state({});
+  const activePane = $derived(tabs.active ? panes[tabs.active.session] : undefined);
 
   // Keyboard: every shortcut goes through here. The interpreter turns presses into commands; `run`
-  // carries each one out in the pane the key was pressed in.
+  // carries each one out, in the pane of the tab in front when it belongs to a pane.
   const keys = new KeyInterpreter();
   /** The half-typed sequence (a count, a `g`), shown like vim's showcmd. */
   let pendingKeys = $state("");
   let helpOpen = $state(false);
   let pendingTimer: ReturnType<typeof setTimeout> | undefined;
-  let graphView = $state<ReturnType<typeof GraphView>>();
-  let detailsPanel = $state<ReturnType<typeof DetailsPanel>>();
-  let diffView = $state<ReturnType<typeof DiffView>>();
 
   function onkeydown(event: KeyboardEvent): void {
     if (event.defaultPrevented) return;
@@ -58,6 +28,7 @@
       {
         key: event.key,
         ctrlKey: event.ctrlKey,
+        shiftKey: event.shiftKey,
         altKey: event.altKey,
         metaKey: event.metaKey,
         editable: isEditable(event.target),
@@ -90,8 +61,8 @@
       const control = element.closest("button, a, input, select, textarea");
       return control && !control.matches("button.file") ? "other" : "files";
     }
-    if (element?.closest(".topbar, .banner, .empty")) return "other";
-    return inspector.diff ? "diff" : "graph";
+    if (element?.closest(".tabstrip, .topbar, .banner, .empty")) return "other";
+    return tabs.active?.inspector.diff ? "diff" : "graph";
   }
 
   function isEditable(target: EventTarget | null): boolean {
@@ -104,63 +75,51 @@
   }
 
   function run(command: Command, context: KeyContext): void {
-    const view = session.view;
     switch (command.kind) {
       case "escape":
         if (helpOpen) helpOpen = false;
-        else if (inspector.diff) closeDiff();
-        else if (view && view.compared !== null) view.compare(null);
+        else activePane?.escape();
         return;
       case "help":
         helpOpen = !helpOpen;
         return;
-      case "close":
-        closeDiff();
+      case "newTab":
+        void chooseRepository();
         return;
-      case "open":
-        detailsPanel?.openFocused();
+      case "closeTab":
+        if (tabs.active) void closeTab(tabs.active);
         return;
-      case "focus":
-        if (command.pane === "files") void focusFileList();
-        else if (inspector.diff) diffView?.focus();
-        else graphView?.focus();
+      case "switchTab":
+        tabs.cycle(command.by);
+        void focusActive();
         return;
-      case "scrollX":
-        diffView?.scrollColumns(command.by);
-        return;
-      case "lineEdge":
-        diffView?.scrollToEdge(command.edge);
-        return;
-      case "move":
-        if (context === "files") detailsPanel?.moveFile(command.by);
-        else if (context === "diff") diffView?.scrollLines(command.by);
-        else view?.moveSelection(command.by);
-        return;
-      case "page":
-        if (context === "diff") diffView?.scrollPages(command.by);
-        else view?.pageSelection(command.by);
-        return;
-      case "goto":
-        if (context === "files") detailsPanel?.gotoFile(command.row);
-        else if (context === "diff") diffView?.scrollToRow(command.row);
-        else view?.selectRow(command.row);
-        return;
+      default:
+        activePane?.run(command, context);
     }
   }
 
-  /** Opens the details panel if needed (selecting the top row if nothing is) and focuses its files. */
-  async function focusFileList(): Promise<void> {
-    const view = session.view;
-    if (!view) return;
-    if (view.selected === null) view.moveSelection(1);
-    detailsOpen = true;
+  /** Moves focus into the tab in front, so its keys work straight away. */
+  async function focusActive(): Promise<void> {
     await tick();
-    detailsPanel?.focusFiles();
+    activePane?.focus();
   }
 
-  async function openRepository(path: string): Promise<void> {
-    await session.open(path);
-    detailsOpen = true;
+  function showTab(tab: Tab): void {
+    tabs.activate(tab);
+    void focusActive();
+  }
+
+  async function closeTab(tab: Tab): Promise<void> {
+    const wasActive = tab === tabs.active;
+    const closing = tabs.close(tab);
+    if (wasActive) void focusActive();
+    await closing;
+  }
+
+  async function openRepository(path: string): Promise<Tab> {
+    const tab = await tabs.open(path);
+    await focusActive();
+    return tab;
   }
 
   async function chooseRepository(): Promise<void> {
@@ -168,15 +127,27 @@
     if (typeof path === "string") await openRepository(path);
   }
 
+  /** Middle-click closes a tab; stopping the press keeps the browser from starting autoscroll. */
+  function onTabMouseDown(event: MouseEvent): void {
+    if (event.button === 1) event.preventDefault();
+  }
+
+  function onTabAuxClick(event: MouseEvent, tab: Tab): void {
+    if (event.button === 1) void closeTab(tab);
+  }
+
   // Follow changes the backend detects on disk for as long as the app runs.
   $effect(() => session.followChanges());
+
+  // Reopen the tabs of the previous launch.
+  void tabs.restore().then(focusActive);
 
   // Dev-only startup hooks, for testing without the folder picker.
   if (import.meta.env.DEV && import.meta.env.VITE_FERGIT_OPEN) {
     const select = Number(import.meta.env.VITE_FERGIT_SELECT ?? "");
-    void openRepository(import.meta.env.VITE_FERGIT_OPEN).then(() => {
+    void openRepository(import.meta.env.VITE_FERGIT_OPEN).then((tab) => {
       if (import.meta.env.VITE_FERGIT_SELECT && Number.isInteger(select)) {
-        session.view?.select(select, true);
+        tab.view.select(select, true);
       }
     });
   }
@@ -185,29 +156,37 @@
 <svelte:window onfocus={() => session.refreshSoon()} {onkeydown} />
 
 <div class="app">
-  <header class="topbar">
-    <button class="button" class:primary={!session.view} onclick={chooseRepository}>
-      Open repository…
-    </button>
-    {#if session.info && session.view}
-      <div class="repo" title={session.info.root}>
-        <span class="repo-name">{session.info.name}</span>
-        <span class="repo-root">{session.info.root}</span>
-      </div>
-      <span class="row-count">{session.view.total.toLocaleString()} rows</span>
-      <label class="toggle" title="Label where branches split and join on the graph (names are inferred)">
-        <input type="checkbox" bind:checked={settings.showRelations} />
-        Relationships
-      </label>
-      <button
-        class="button"
-        onclick={() => session.refresh()}
-        disabled={session.refreshing}
-        title="Re-read the repository"
-      >
-        Refresh
-      </button>
-    {/if}
+  <header class="tabstrip">
+    <div class="tabs" role="tablist" aria-label="Open repositories">
+      {#each tabs.all as tab (tab.session)}
+        <div class="tab" class:active={tab === tabs.active}>
+          <button
+            class="tab-label"
+            role="tab"
+            aria-selected={tab === tabs.active}
+            title={tab.info.root}
+            onclick={() => showTab(tab)}
+            onmousedown={onTabMouseDown}
+            onauxclick={(event) => onTabAuxClick(event, tab)}
+          >
+            {tab.info.name}
+          </button>
+          <button
+            class="icon-button tab-close"
+            aria-label="Close {tab.info.name}"
+            title="Close (Ctrl+W)"
+            onclick={() => closeTab(tab)}>×</button
+          >
+        </div>
+      {/each}
+    </div>
+    <button
+      class="icon-button"
+      aria-label="Open repository in a new tab"
+      title="Open repository (Ctrl+T)"
+      onclick={chooseRepository}>+</button
+    >
+    <span class="spacer"></span>
     <button
       class="icon-button keys-button"
       aria-label="Keyboard shortcuts"
@@ -215,6 +194,21 @@
       onclick={() => (helpOpen = !helpOpen)}>?</button
     >
   </header>
+
+  {#if tabs.active}
+    {@const tab = tabs.active}
+    <div class="topbar">
+      <span class="repo-root" title={tab.info.root}>{tab.info.root}</span>
+      <span class="row-count">{tab.view.total.toLocaleString()} rows</span>
+      <label class="toggle" title="Label where branches split and join on the graph (names are inferred)">
+        <input type="checkbox" bind:checked={settings.showRelations} />
+        Relationships
+      </label>
+      <button class="button" onclick={() => tab.refresh()} disabled={tab.refreshing} title="Re-read the repository">
+        Refresh
+      </button>
+    </div>
+  {/if}
 
   {#if session.error}
     <div class="banner" role="alert">
@@ -229,34 +223,18 @@
   {/if}
 
   <main class="main">
-    {#if session.view}
-      <div class="workspace">
-        <!-- The graph stays laid out under an open diff, so closing the diff finds it unchanged. -->
-        <div class="graph-layer" inert={inspector.diff !== null}>
-          <GraphView bind:this={graphView} view={session.view} onactivate={() => (detailsOpen = true)} />
-        </div>
-        {#if inspector.diff}
-          <div class="diff-layer">
-            {#key inspector.diff.request}
-              <DiffView bind:this={diffView} diff={inspector.diff} onclose={closeDiff} />
-            {/key}
-          </div>
-        {/if}
-      </div>
-      {#if detailsOpen && session.view.selected !== null}
-        <DetailsPanel
-          bind:this={detailsPanel}
-          view={session.view}
-          {inspector}
-          onopen={openFile}
-          onclose={() => (detailsOpen = false)}
-        />
-      {/if}
-    {:else}
+    {#each tabs.all as tab (tab.session)}
+      <TabPane bind:this={panes[tab.session]} {tab} active={tab === tabs.active} />
+    {/each}
+    {#if tabs.all.length === 0}
       <div class="empty">
-        <h1>No repository open</h1>
-        <p>Open a folder that contains a git repository to browse its history.</p>
-        <button class="button primary" onclick={chooseRepository}>Open repository…</button>
+        {#if tabs.restoring}
+          <p>Opening repositories…</p>
+        {:else}
+          <h1>No repository open</h1>
+          <p>Open a folder that contains a git repository to browse its history.</p>
+          <button class="button primary" onclick={chooseRepository}>Open repository…</button>
+        {/if}
       </div>
     {/if}
   </main>
@@ -276,40 +254,100 @@
     height: 100%;
   }
 
+  .tabstrip {
+    display: flex;
+    flex: none;
+    align-items: center;
+    gap: 4px;
+    height: 36px;
+    padding: 0 8px 0 0;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-subtle);
+  }
+
+  .tabs {
+    display: flex;
+    align-self: stretch;
+    min-width: 0;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .tab {
+    display: flex;
+    flex: 0 1 auto;
+    align-items: center;
+    min-width: 72px;
+    max-width: 220px;
+    padding-right: 4px;
+    border-right: 1px solid var(--border);
+    color: var(--fg-muted);
+  }
+
+  .tab:hover {
+    background: var(--bg-hover);
+  }
+
+  /* The tab in front joins the content below it. */
+  .tab.active {
+    margin-bottom: -1px;
+    background: var(--bg);
+    color: var(--fg);
+    box-shadow: inset 0 2px 0 var(--primary-bg);
+  }
+
+  .tab-label {
+    flex: 1;
+    min-width: 0;
+    height: 100%;
+    padding: 0 6px 0 12px;
+    overflow: hidden;
+    border: 0;
+    background: transparent;
+    text-align: left;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    cursor: default;
+  }
+
+  .tab.active .tab-label {
+    font-weight: 600;
+  }
+
+  .tab-close {
+    flex: none;
+    width: 20px;
+    height: 20px;
+    font-size: 14px;
+  }
+
+  /* Only the tab in front and the one under the mouse show their close button. */
+  .tab:not(.active):not(:hover) .tab-close:not(:focus-visible) {
+    visibility: hidden;
+  }
+
+  .spacer {
+    flex: 1;
+  }
+
   .topbar {
     display: flex;
     flex: none;
     align-items: center;
     gap: 10px;
-    height: 40px;
+    height: 36px;
     padding: 0 10px;
     border-bottom: 1px solid var(--border);
-    background: var(--bg-subtle);
   }
 
-  .repo {
-    display: flex;
+  .repo-root {
     flex: 1;
-    align-items: baseline;
-    gap: 8px;
     min-width: 0;
-  }
-
-  .repo-name {
-    flex: none;
-    font-weight: 600;
-  }
-
-  .repo-name,
-  .repo-root {
     overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .repo-root {
     color: var(--fg-muted);
     font-size: 12px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .toggle {
@@ -383,33 +421,12 @@
     color: inherit;
   }
 
+  /* Holds the stacked tab panes. */
   .main {
-    display: flex;
-    flex: 1;
-    min-height: 0;
-  }
-
-  /* Not `.primary`: that is also the class of a primary button, and styles here are scoped to the
-     component, not to one element, so the layout rule would stretch the buttons. */
-  .workspace {
     position: relative;
     display: flex;
     flex: 1;
-    min-width: 0;
-  }
-
-  .graph-layer {
-    display: flex;
-    flex: 1;
-    min-width: 0;
-  }
-
-  .diff-layer {
-    position: absolute;
-    inset: 0;
-    z-index: 3;
-    display: flex;
-    background: var(--bg);
+    min-height: 0;
   }
 
   .empty {
