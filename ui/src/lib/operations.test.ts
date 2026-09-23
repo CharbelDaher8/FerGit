@@ -20,7 +20,7 @@ vi.mock("./bindings", () => ({
   events: {},
 }));
 
-const INFO: RepoInfo = { root: "/r", name: "r", generation: 7, rowCount: 3, head: null };
+const INFO: RepoInfo = { root: "/r", name: "r", generation: 7, rowCount: 3, head: null, branch: "main", state: { kind: "clean" } };
 const FETCH: Operation = { kind: "fetch", remote: null, prune: true };
 const ID = "c".repeat(40);
 

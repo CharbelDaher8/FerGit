@@ -13,7 +13,7 @@ use std::time::Duration;
 use fergit_core::askpass::{AskpassServer, PromptRequest, Prompter};
 use fergit_core::session::OpContext;
 use fergit_core::session::journal::Journal;
-use fergit_core::{OpId, OpOutcome, Operation};
+use fergit_core::{OpId, OpOutcome, Operation, Undoable};
 use serde::Serialize;
 use tauri::{AppHandle, Manager, State};
 use tauri_specta::Event;
@@ -115,6 +115,22 @@ pub async fn run_operation(
     })
     .await
     .map_err(|e| AppError::new(ErrorKind::Internal, format!("background task failed: {e}")))
+}
+
+/// What undo would restore now on the open repository: the most recent operation that can be
+/// undone, why it can't, or that there is nothing to undo. Run it with the `undo` operation, naming
+/// the entry this returned.
+#[tauri::command]
+#[specta::specta]
+pub async fn undoable(state: State<'_, AppState>, operations: State<'_, Operations>) -> Result<Undoable, AppError> {
+    let session = state.session()?;
+    let Some(journal) = operations.context.journal.clone() else {
+        return Ok(Undoable::Nothing);
+    };
+    tauri::async_runtime::spawn_blocking(move || session.undoable(&journal))
+        .await
+        .map_err(|e| AppError::new(ErrorKind::Internal, format!("background task failed: {e}")))?
+        .map_err(|e| AppError::new(ErrorKind::Internal, format!("Can't read the operation journal: {e}")))
 }
 
 /// Answers the credential prompt `id`; `null` cancels it, failing the operation that asked.

@@ -151,6 +151,8 @@ const info: RepoInfo = {
   generation: 1,
   rowCount: rows.length,
   head: rows[0].id,
+  branch: "main",
+  state: { kind: "clean" },
 };
 
 mockIPC((command, payload) => {

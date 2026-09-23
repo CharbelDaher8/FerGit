@@ -175,6 +175,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
             file_diff,
             operations::run_operation,
             operations::answer_prompt,
+            operations::undoable,
         ])
         .events(collect_events![RepoChanged, operations::OpProgress, operations::CredentialPrompt])
         .error_handling(ErrorHandlingMode::Throw)
