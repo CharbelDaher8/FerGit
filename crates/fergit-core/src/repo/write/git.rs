@@ -4,13 +4,14 @@
 //! to remember it:
 //! - arguments are passed one by one (`Command::arg`), never through a shell;
 //! - output is in English (`LC_ALL=C`), so failures can be recognized from git's messages;
-//! - git never waits on a terminal or opens someone else's window: stdin is closed,
-//!   `GIT_TERMINAL_PROMPT=0`, Git Credential Manager is non-interactive, and credential and
-//!   passphrase prompts go to FerGit's askpass helper when one is given, and fail otherwise;
+//! - git never waits on a terminal or opens someone else's window: stdin is closed (or carries
+//!   the input FerGit gives it), `GIT_TERMINAL_PROMPT=0`, no editor is ever started, Git Credential
+//!   Manager is non-interactive, and credential and passphrase prompts go to FerGit's askpass
+//!   helper when one is given, and fail otherwise;
 //! - a lock file another git process briefly holds (`index.lock`, a ref's `.lock`) is waited out
 //!   with a few short retries instead of failing the operation.
 
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::thread;
@@ -60,9 +61,14 @@ impl Git<'_> {
     /// Runs `git <args>` to completion, passing each line of progress git reports (with credentials
     /// scrubbed) to `progress` as it arrives. Fails only if git couldn't be started.
     pub fn run(&self, args: &[&str], progress: &mut dyn FnMut(&str)) -> std::io::Result<Output> {
+        self.run_with_input(args, &[], progress)
+    }
+
+    /// Like [`Git::run`], writing `input` to git's stdin (for `update-ref --stdin`, say).
+    pub fn run_with_input(&self, args: &[&str], input: &[u8], progress: &mut dyn FnMut(&str)) -> std::io::Result<Output> {
         let mut attempt = 0;
         loop {
-            let output = self.run_once(args, progress)?;
+            let output = self.run_once(args, input, progress)?;
             if output.success() || !holds_lock(&output.stderr) || attempt == LOCK_RETRIES {
                 return Ok(output);
             }
@@ -71,7 +77,7 @@ impl Git<'_> {
         }
     }
 
-    fn run_once(&self, args: &[&str], progress: &mut dyn FnMut(&str)) -> std::io::Result<Output> {
+    fn run_once(&self, args: &[&str], input: &[u8], progress: &mut dyn FnMut(&str)) -> std::io::Result<Output> {
         let mut command = Command::new("git");
         command
             .current_dir(self.root)
@@ -79,7 +85,7 @@ impl Git<'_> {
             // (`GIT_ASKPASS`, set below when there is a helper, takes precedence over it.)
             .args(["-c", "core.askPass="])
             .args(args)
-            .stdin(Stdio::null())
+            .stdin(if input.is_empty() { Stdio::null() } else { Stdio::piped() })
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .env("LC_ALL", "C")
@@ -87,8 +93,12 @@ impl Git<'_> {
             // Git Credential Manager may still supply stored credentials, but must not open its own
             // sign-in windows: prompts belong in FerGit's dialog.
             .env("GCM_INTERACTIVE", "never")
-            // A pull that fast-forwards never needs a message, but never open an editor regardless.
-            .env("GIT_MERGE_AUTOEDIT", "no");
+            // Never open an editor: merges, rebases, cherry-picks and reverts take the message git
+            // prepared. `:` is the editor git itself recognizes as "don't edit" and never starts,
+            // so it works on every platform; the sequence editor covers a rebase's todo list.
+            .env("GIT_MERGE_AUTOEDIT", "no")
+            .env("GIT_EDITOR", ":")
+            .env("GIT_SEQUENCE_EDITOR", ":");
         match self.askpass {
             Some(askpass) => {
                 command.envs(askpass.env());
@@ -108,6 +118,11 @@ impl Git<'_> {
         }
 
         let mut child = command.spawn()?;
+        if let Some(mut stdin) = child.stdin.take() {
+            // Inputs are a few lines, well within the pipe's buffer. A write error means git exited
+            // early, which its exit status reports; dropping `stdin` closes it.
+            let _ = stdin.write_all(input);
+        }
         let mut stdout = child.stdout.take().expect("stdout is piped");
         let stdout = thread::spawn(move || {
             let mut bytes = Vec::new();
